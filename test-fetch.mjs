@@ -1,26 +1,22 @@
 import { YuyuApiClient } from './lib/api.js';
+import { scanRunningBrowsersForToken } from './lib/browser-sync.js';
 
-// 优先从环境变量获取，否则尝试从已登录 Chrome 自动读取
+// 优先从环境变量获取，否则直接从本地浏览器存储无感扫描（不依赖 MCP）
 let token = process.env.YUYU_AUTH_TOKEN;
 
 if (!token) {
-  try {
-    const { puppeteer } = await import('file:///D:/npm-cache/_npx/15c61037b1978c83/node_modules/chrome-devtools-mcp/build/src/third_party/index.js');
-    const browser = await puppeteer.connect({ channel: 'chrome' });
-    const pages = await browser.pages();
-    const targetPage = pages.find(p => p.url().includes('sub.anzhiyu.com'));
-    if (targetPage) {
-      token = await targetPage.evaluate(() => localStorage.getItem('auth_token'));
-      console.log('[OK] 已成功从运行中的 Chrome 自动提取当前登录 Auth Token！');
+  const scanRes = await scanRunningBrowsersForToken();
+  if (scanRes.success && scanRes.token) {
+    token = scanRes.token;
+    console.log(`[OK] 已从本地【${scanRes.browser}】存储无感提取当前活跃账号 (${scanRes.email})！`);
+    if (scanRes.allDiscovered && scanRes.allDiscovered.length > 1) {
+      console.log(`[OK] 同时发现共 ${scanRes.allDiscovered.length} 个已登录账号: ${scanRes.allDiscovered.map(a => a.email).join(', ')}`);
     }
-    await browser.disconnect();
-  } catch (err) {
-    // 忽略连接错误，提示用户传入
   }
 }
 
 if (!token) {
-  console.error('[FAIL] 未找到 Token！请在环境变量中设置 YUYU_AUTH_TOKEN，或确保 Chrome 已打开 sub.anzhiyu.com 页面。');
+  console.error('[FAIL] 未找到有效 Token！请先在浏览器中登录 https://sub.anzhiyu.com');
   process.exit(1);
 }
 
