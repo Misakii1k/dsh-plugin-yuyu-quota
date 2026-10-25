@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>暗黑极客终端 (Dark Terminal)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "PingFang SC", monospace;
+      background: #05080d;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+      color: #94a3b8;
+    }
+    .terminal-card {
+      width: 348px;
+      background: #0b0f17;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    }
+    .cli-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #1e293b;
+      padding-bottom: 8px;
+    }
+    .cli-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #38bdf8;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+    .cli-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      color: #10b981;
+    }
+    .blink-dot {
+      width: 6px;
+      height: 6px;
+      background: #10b981;
+      border-radius: 50%;
+      animation: pulse 1.6s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
+    /* CLI 风格账号选项卡 */
+    .cli-accounts {
+      display: flex;
+      gap: 4px;
+    }
+    .cli-tab {
+      flex: 1;
+      padding: 5px 6px;
+      border-radius: 4px;
+      background: #131b27;
+      border: 1px solid #1e293b;
+      font-size: 10px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      transition: all 0.15s;
+    }
+    .cli-tab.active {
+      border-color: #38bdf8;
+      background: #0c2033;
+    }
+    .cli-tab-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #64748b;
+    }
+    .cli-tab.active .cli-tab-head {
+      color: #38bdf8;
+    }
+    .cli-tab-mail {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100px;
+    }
+    .cli-tab-val {
+      font-weight: 700;
+      color: #cbd5e1;
+      font-variant-numeric: tabular-nums;
+    }
+    .cli-tab.active .cli-tab-val {
+      color: #34d399;
+    }
+
+    /* 终端核心数显 */
+    .terminal-hero {
+      background: #070a0f;
+      border: 1px dashed #334155;
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .hero-tag {
+      font-size: 9.5px;
+      color: #64748b;
+      display: flex;
+      justify-content: space-between;
+    }
+    .hero-number {
+      font-size: 26px;
+      font-weight: 700;
+      color: #34d399;
+      margin: 4px 0;
+      letter-spacing: -0.5px;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 12px rgba(52, 211, 153, 0.2);
+    }
+    .hero-sub {
+      font-size: 10px;
+      color: #475569;
+      display: flex;
+      justify-content: space-between;
+      border-top: 1px solid #131b27;
+      padding-top: 5px;
+      margin-top: 4px;
+    }
+
+    /* 紧凑 KV 列表 */
+    .kv-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      background: #070a0f;
+      border-radius: 6px;
+      border: 1px solid #17202e;
+      padding: 8px 10px;
+    }
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10.5px;
+    }
+    .kv-k {
+      color: #64748b;
+    }
+    .kv-v {
+      font-weight: 600;
+      color: #e2e8f0;
+      font-variant-numeric: tabular-nums;
+    }
+    .kv-v.green {
+      color: #34d399;
+    }
+
+    /* 终端式操作按钮 */
+    .btn-terminal {
+      width: 100%;
+      background: #101723;
+      border: 1px solid #1e293b;
+      color: #38bdf8;
+      border-radius: 5px;
+      padding: 6px 0;
+      font-size: 10.5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+    .btn-terminal:hover {
+      background: #17253b;
+      border-color: #38bdf8;
+      color: #7dd3fc;
+    }
+    .cli-foot {
+      display: flex;
+      justify-content: space-between;
+      font-size: 9px;
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+  <div class="terminal-card">
+    <div class="cli-bar">
+      <div class="cli-title">
+        <span>❯ YUYU_API // ASSET</span>
+      </div>
+      <div class="cli-status">
+        <span class="blink-dot"></span>
+        <span>CONNECTED</span>
+      </div>
+    </div>
+
+    <!-- 账号多选 Tab -->
+    <div class="cli-accounts">
+      <div class="cli-tab active">
+        <div class="cli-tab-head">
+          <span class="cli-tab-mail">878503820</span>
+          <span>[ACT]</span>
+        </div>
+        <div class="cli-tab-val">$ 7.0203</div>
+      </div>
+      <div class="cli-tab">
+        <div class="cli-tab-head">
+          <span class="cli-tab-mail">3231640018</span>
+          <span>[ALT]</span>
+        </div>
+        <div class="cli-tab-val">$ 8.8062</div>
+      </div>
+    </div>
+
+    <!-- 核心数显 -->
+    <div class="terminal-hero">
+      <div class="hero-tag">
+        <span>NET_BALANCE</span>
+        <span>TOTAL_DEPOSIT: $13.90</span>
+      </div>
+      <div class="hero-number">$ 7.0203</div>
+      <div class="hero-sub">
+        <span>TODAY_ACTUAL: $0.0000</span>
+        <span>KEYS: 2</span>
+      </div>
+    </div>
+
+    <!-- 键值对监控 -->
+    <div class="kv-list">
+      <div class="kv-row">
+        <span class="kv-k">TODAY_TOKENS</span>
+        <span class="kv-v">0 TOKENS</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-k">TODAY_REQUESTS</span>
+        <span class="kv-v">0 REQS</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-k">30D_ACCUM_COST</span>
+        <span class="kv-v">$0.0000</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-k">BRIDGE_CHANNEL</span>
+        <span class="kv-v green">LEVELDB_DIRECT_V1.0</span>
+      </div>
+    </div>
+
+    <!-- 按钮 -->
+    <button class="btn-terminal">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="4 17 10 11 4 5"/>
+        <line x1="12" y1="19" x2="20" y2="19"/>
+      </svg>
+      <span>RESCAN_BROWSER_TOKENS</span>
+    </button>
+
+    <div class="cli-foot">
+      <span>SYNC_TS: 22:35:10</span>
+      <span>PING: &lt; 5MS</span>
+    </div>
+  </div>
+</body>
+</html>

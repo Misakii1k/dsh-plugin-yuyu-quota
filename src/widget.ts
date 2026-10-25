@@ -140,10 +140,10 @@ export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <div style="display:flex;align-items:center;gap:6px;">
         <span style="display:inline-flex;color:#2563eb;">${ICONS.fish}</span>
-        <span style="font-weight:600;font-size:12px;color:#0f172a;">鱼鱼API 资产概况</span>
+        <span style="font-weight:600;font-size:12.5px;color:#0f172a;">鱼鱼 API</span>
       </div>
       <div style="display:flex;align-items:center;gap:3px;">
-        <button id="yuyu-refresh-btn" class="yuyu-btn-action" style="padding:3px 6px;border-radius:4px;" title="立即刷新">
+        <button id="yuyu-refresh-btn" class="yuyu-btn-action" style="padding:3px 6px;border-radius:4px;" title="刷新数据">
           <span class="yuyu-refresh-icon" style="display:inline-flex;">${ICONS.refresh}</span>
         </button>
       </div>
@@ -152,7 +152,7 @@ export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
     <!-- 视觉主角：当前账户余额主数字 -->
     <div style="margin-bottom:12px;padding:10px 12px;background:${isAlert ? '#fff1f2' : '#f0fdf4'};border:1px solid ${isAlert ? '#fecdd3' : '#bbf7d0'};border-radius:8px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <span style="font-size:11px;color:${isAlert ? '#9f1239' : '#166534'};font-weight:500;">可用总余额</span>
+        <span style="font-size:11px;color:${isAlert ? '#9f1239' : '#166534'};font-weight:500;">可用余额</span>
         <span style="font-size:10px;color:#64748b;font-variant-numeric:tabular-nums;">${safeEmail}</span>
       </div>
       <div style="margin-top:2px;display:flex;align-items:baseline;gap:2px;">
@@ -165,36 +165,36 @@ export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
     <!-- 数据指标网格 (2x2 对齐布局，等宽数字) -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">
       <div class="yuyu-grid-cell">
-        <span style="color:#64748b;font-size:10px;">今日余额消耗</span>
+        <span style="color:#64748b;font-size:10px;">实扣</span>
         <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">$${snapshot.todayCost.toFixed(4)}</span>
       </div>
       <div class="yuyu-grid-cell">
-        <span style="color:#64748b;font-size:10px;">今日消耗 Tokens</span>
+        <span style="color:#64748b;font-size:10px;">Tokens</span>
         <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">${snapshot.todayTokens.toLocaleString()}</span>
       </div>
       <div class="yuyu-grid-cell">
-        <span style="color:#64748b;font-size:10px;">名下可用密钥</span>
+        <span style="color:#64748b;font-size:10px;">密钥</span>
         <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">${snapshot.keysCount} 个</span>
       </div>
       <div class="yuyu-grid-cell">
-        <span style="color:#64748b;font-size:10px;">今日请求频次</span>
+        <span style="color:#64748b;font-size:10px;">请求</span>
         <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">${snapshot.todayRequests} 次</span>
       </div>
     </div>
 
-    <!-- 极简主动作：一键从浏览器同步凭证 -->
+    <!-- 极简主动作：从浏览器同步账号 -->
     <div style="display:flex;flex-direction:column;gap:5px;">
       <button id="yuyu-auto-sync-btn" class="yuyu-btn-action" style="width:100%;padding:6px 0;">
         <span class="yuyu-sync-icon" style="display:inline-flex;">${ICONS.browser}</span>
-        <span id="yuyu-sync-btn-text">一键从浏览器同步登录凭证</span>
+        <span id="yuyu-sync-btn-text">从浏览器同步账号</span>
       </button>
       <div id="yuyu-sync-feedback" style="display:none;font-size:10px;text-align:center;padding:2px 0;"></div>
     </div>
 
     <!-- 底部状态小注 -->
     <div style="margin-top:8px;padding-top:6px;border-top:1px solid #f1f5f9;display:flex;justify-content:space-between;font-size:10px;color:#94a3b8;">
-      <span>同步: ${new Date(snapshot.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="color:#10b981;">●</span> 国内网络直连</span>
+      <span>已同步 ${new Date(snapshot.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="color:#10b981;">●</span> 本地直连</span>
     </div>
   </div>
 

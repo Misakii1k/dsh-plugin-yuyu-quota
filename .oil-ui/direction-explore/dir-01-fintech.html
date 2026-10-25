@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>精致金融看板 (FinTech Pro)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+      color: #0f172a;
+    }
+    .widget-card {
+      width: 348px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand-title {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #0f172a;
+      letter-spacing: -0.2px;
+    }
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+    }
+    .icon-btn {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      color: #64748b;
+      padding: 4px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .icon-btn:hover {
+      background: #e2e8f0;
+      color: #0f172a;
+    }
+
+    /* 分段胶囊控制器 (Segmented Control) */
+    .account-tabs {
+      display: flex;
+      background: #f1f5f9;
+      padding: 3px;
+      border-radius: 8px;
+      gap: 3px;
+    }
+    .tab-pill {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 9px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.18s ease;
+      min-width: 0;
+      border: 1px solid transparent;
+    }
+    .tab-pill.active {
+      background: #ffffff;
+      color: #0f172a;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      border-color: #e2e8f0;
+    }
+    .tab-pill:not(.active) {
+      color: #64748b;
+    }
+    .tab-pill:not(.active):hover {
+      color: #334155;
+    }
+    .tab-email {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-right: 4px;
+    }
+    .tab-bal {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .tab-pill.active .tab-bal {
+      color: #059669;
+    }
+
+    /* 核心余额大看板 */
+    .hero-banner {
+      background: linear-gradient(135deg, #ecfdf5 0%, #f0fdf4 100%);
+      border: 1px solid #a7f3d0;
+      border-radius: 10px;
+      padding: 13px 15px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-banner::after {
+      content: "";
+      position: absolute;
+      right: -20px;
+      bottom: -20px;
+      width: 80px;
+      height: 80px;
+      background: radial-gradient(circle, rgba(16, 185, 129, 0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #065f46;
+      font-weight: 500;
+    }
+    .hero-main {
+      margin-top: 5px;
+      display: flex;
+      align-items: baseline;
+      gap: 3px;
+    }
+    .currency-symbol {
+      font-size: 16px;
+      font-weight: 600;
+      color: #047857;
+    }
+    .balance-val {
+      font-size: 28px;
+      font-weight: 700;
+      color: #047857;
+      letter-spacing: -0.5px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+    .hero-footer {
+      margin-top: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10.5px;
+      color: #059669;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 2x2 指标矩阵 */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+    .metric-card {
+      background: #f8fafc;
+      border: 1px solid #f1f5f9;
+      border-radius: 8px;
+      padding: 8px 10px;
+      transition: border-color 0.15s;
+    }
+    .metric-card:hover {
+      border-color: #e2e8f0;
+    }
+    .metric-label {
+      font-size: 10px;
+      color: #64748b;
+      margin-bottom: 2px;
+    }
+    .metric-value {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #1e293b;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 底部操作 */
+    .btn-sync {
+      width: 100%;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      padding: 7px 0;
+      font-size: 11.5px;
+      font-weight: 500;
+      color: #334155;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .btn-sync:hover {
+      background: #f8fafc;
+      border-color: #94a3b8;
+      color: #0f172a;
+    }
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #94a3b8;
+      padding-top: 4px;
+      border-top: 1px solid #f8fafc;
+    }
+    .status-ok {
+      color: #10b981;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="widget-card">
+    <!-- 顶栏标题 -->
+    <div class="header">
+      <div class="brand-title">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.46-3.44 6-7 6s-7.56-2.54-8.5-6Z"/>
+          <path d="M18 12v.5"/>
+          <path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/>
+        </svg>
+        <span>鱼鱼API 资产概况</span>
+        <span class="live-dot" title="实时直连"></span>
+      </div>
+      <button class="icon-btn" title="刷新最新数据">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- 账号分段胶囊秒切 -->
+    <div class="account-tabs">
+      <div class="tab-pill active">
+        <span class="tab-email">878503820@qq.com</span>
+        <span class="tab-bal">$7.02</span>
+      </div>
+      <div class="tab-pill">
+        <span class="tab-email">3231640018@qq.com</span>
+        <span class="tab-bal">$8.81</span>
+      </div>
+    </div>
+
+    <!-- 核心余额资产看板 -->
+    <div class="hero-banner">
+      <div class="hero-header">
+        <span>可用余额 (当前账号)</span>
+        <span>充值额度 $13.90</span>
+      </div>
+      <div class="hero-main">
+        <span class="currency-symbol">$</span>
+        <span class="balance-val">7.02</span>
+      </div>
+      <div class="hero-footer">
+        <span>今日折后实扣: $0.0000</span>
+        <span>近30天调用 0 次</span>
+      </div>
+    </div>
+
+    <!-- 2x2 指标矩阵 -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">今日消耗 Tokens</div>
+        <div class="metric-value">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">今日调用次数</div>
+        <div class="metric-value">0 次</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">名下可用密钥</div>
+        <div class="metric-value">2 个</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">账户安全阈值</div>
+        <div class="metric-value">$2.00 (正常)</div>
+      </div>
+    </div>
+
+    <!-- 底部操作按钮 -->
+    <button class="btn-sync">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect width="20" height="16" x="2" y="4" rx="2"/><path d="M2 8h20"/><circle cx="6" cy="6" r=".5" fill="currentColor"/>
+      </svg>
+      <span>从浏览器同步当前登录账号</span>
+    </button>
+
+    <!-- 底部状态与时间戳 -->
+    <div class="card-footer">
+      <span>同步: 22:35:10</span>
+      <span class="status-ok">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+        <span>LevelDB 无感直连</span>
+      </span>
+    </div>
+  </div>
+</body>
+</html>
