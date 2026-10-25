@@ -237,17 +237,19 @@
     accounts.forEach(function(acc) {
       var isActive = acc.email === tokenStore.activeEmail;
       var chip = document.createElement('div');
+      chip.className = 'yuyu-avatar-chip' + (isActive ? ' active' : '');
       chip.title = acc.email + ' ($' + Number(acc.balance || 0).toFixed(2) + ')';
       chip.style.cssText = [
-        'display:flex;align-items:center;gap:5px;padding:3px 8px 3px 4px;border-radius:20px;cursor:pointer;transition:all 0.16s ease;font-size:11px;',
+        'display:flex;align-items:center;gap:5px;padding:3px 8px 3px 4px;border-radius:20px;cursor:pointer;font-size:11px;user-select:none;',
+        'transition:transform 0.12s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;',
         isActive
-          ? 'background:#eff6ff;border:1px solid #93c5fd;color:#1d4ed8;box-shadow:0 0 0 2px rgba(37,99,235,0.12);'
+          ? 'background:#eff6ff;border:1px solid #93c5fd;color:#1d4ed8;box-shadow:0 0 0 2px rgba(37,99,235,0.14);animation:yuyuGlow 2.5s infinite ease-in-out;'
           : 'background:#f1f5f9;border:1px solid #e2e8f0;color:#475569;'
       ].join('');
 
       var initial = (acc.email || '').replace(/@.*/, '').slice(0, 2).toUpperCase() || 'ID';
       var circle = document.createElement('span');
-      circle.style.cssText = 'width:17px;height:17px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;' +
+      circle.style.cssText = 'width:17px;height:17px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;transition:background 0.2s ease;' +
         (isActive ? 'background:#2563eb;color:#ffffff;' : 'background:#94a3b8;color:#ffffff;');
       circle.textContent = initial;
 
@@ -258,6 +260,23 @@
 
       chip.appendChild(circle);
       chip.appendChild(balSpan);
+
+      chip.addEventListener('mouseenter', function() {
+        if (!acc.email || acc.email === tokenStore.activeEmail) return;
+        chip.style.transform = 'translateY(-1px)';
+        chip.style.background = '#e8ebf0';
+      });
+      chip.addEventListener('mouseleave', function() {
+        if (!acc.email || acc.email === tokenStore.activeEmail) return;
+        chip.style.transform = 'none';
+        chip.style.background = '#f1f5f9';
+      });
+      chip.addEventListener('mousedown', function() {
+        chip.style.transform = 'scale(0.93)';
+      });
+      chip.addEventListener('mouseup', function() {
+        chip.style.transform = 'none';
+      });
 
       chip.addEventListener('click', function(e) {
         e.stopPropagation();
@@ -274,14 +293,14 @@
   function showTip(text, isError) {
     var tip = document.getElementById('yuyu-sync-tip');
     if (!tip) return;
-    tip.style.display = 'block';
+    tip.textContent = text;
     tip.style.color = isError ? '#b91c1c' : '#059669';
     tip.style.background = isError ? '#fef2f2' : '#f0fdf4';
-    tip.textContent = text;
+    tip.classList.add('show');
     if (window.__yuyuTipTimer) clearTimeout(window.__yuyuTipTimer);
     window.__yuyuTipTimer = setTimeout(function() {
-      tip.style.display = 'none';
-    }, 3000);
+      tip.classList.remove('show');
+    }, 2800);
   }
 
   // 刷新 DOM 显示
@@ -299,7 +318,12 @@
       pillVal.textContent = '$' + tokenStore.balance.toFixed(2);
       pillVal.style.color = isLow ? '#e11d48' : '#059669';
     }
-    if (cardBal) cardBal.textContent = tokenStore.balance.toFixed(2);
+    if (cardBal) {
+      cardBal.classList.remove('is-animating');
+      void cardBal.offsetWidth; // 触发 reflow 重置动画
+      cardBal.textContent = tokenStore.balance.toFixed(2);
+      cardBal.classList.add('is-animating');
+    }
     if (cardRecharge) cardRecharge.textContent = '累计充值 $' + tokenStore.totalRecharged.toFixed(2);
     if (cardCost) cardCost.textContent = '$' + tokenStore.todayCost.toFixed(4);
     if (cardTokens) cardTokens.textContent = tokenStore.todayTokens.toLocaleString();
@@ -321,46 +345,120 @@
     container.style.cssText = 'position:fixed;bottom:20px;right:28px;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;user-select:none;pointer-events:auto;';
 
     var html = [
-      '<div id="yuyu-pill-btn" style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:9999px;background:#ffffff;color:#1e293b;border:1px solid #e2e8f0;box-shadow:0 4px 14px rgba(0,0,0,0.06);cursor:pointer;transition:transform 0.15s ease, box-shadow 0.15s ease;">',
+      '<style>',
+      '  @keyframes yuyuNumPop {',
+      '    0% { transform: translateY(4px) scale(0.97); opacity: 0.6; }',
+      '    60% { transform: translateY(-1px) scale(1.01); opacity: 1; }',
+      '    100% { transform: translateY(0) scale(1); opacity: 1; }',
+      '  }',
+      '  @keyframes yuyuGlow {',
+      '    0%, 100% { box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12); }',
+      '    50% { box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.22); }',
+      '  }',
+      '  #yuyu-pill-btn {',
+      '    display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 9999px;',
+      '    background: #ffffff; color: #1e293b; border: 1px solid #e2e8f0; box-shadow: 0 4px 14px rgba(0,0,0,0.06);',
+      '    cursor: pointer; transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.16s cubic-bezier(0.16, 1, 0.3, 1);',
+      '  }',
+      '  #yuyu-pill-btn:hover {',
+      '    transform: translateY(-2px); box-shadow: 0 8px 20px -2px rgba(15, 23, 42, 0.12);',
+      '  }',
+      '  #yuyu-pill-btn:active {',
+      '    transform: scale(0.95); transition: transform 0.08s ease;',
+      '  }',
+      '  #yuyu-card-popup {',
+      '    position: absolute; bottom: 46px; right: 0; width: 336px;',
+      '    background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);',
+      '    border: 1px solid rgba(226, 232, 240, 0.92); border-radius: 18px;',
+      '    box-shadow: 0 16px 36px -4px rgba(15, 23, 42, 0.12), 0 4px 14px rgba(15, 23, 42, 0.04);',
+      '    padding: 16px 18px; color: #0f172a; box-sizing: border-box;',
+      '    transform-origin: bottom right;',
+      '    opacity: 0; transform: scale(0.95) translateY(12px); pointer-events: none; visibility: hidden;',
+      '    transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.22s;',
+      '  }',
+      '  #yuyu-card-popup.is-open {',
+      '    opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; visibility: visible;',
+      '  }',
+      '  #yuyu-card-bal.is-animating {',
+      '    animation: yuyuNumPop 0.32s cubic-bezier(0.16, 1, 0.3, 1);',
+      '  }',
+      '  #yuyu-card-sync:hover {',
+      '    border-color: #2563eb; color: #1d4ed8; background: #f8fafc; transform: translateY(-1px);',
+      '    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.08);',
+      '  }',
+      '  #yuyu-card-sync:active {',
+      '    transform: scale(0.97);',
+      '  }',
+      '  #yuyu-card-refresh:hover {',
+      '    color: #0f172a; background: #f1f5f9; transform: scale(1.06);',
+      '  }',
+      '  #yuyu-card-refresh:active {',
+      '    transform: scale(0.92);',
+      '  }',
+      '  .yuyu-drawer-content {',
+      '    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;',
+      '    overflow: hidden; max-height: 80px; opacity: 1; padding-top: 8px; margin-top: 8px;',
+      '    border-top: 1px dashed #e2e8f0;',
+      '    transition: max-height 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease, margin 0.22s ease, padding 0.22s ease;',
+      '  }',
+      '  .yuyu-drawer-content.collapsed {',
+      '    max-height: 0; opacity: 0; padding-top: 0; margin-top: 0; border-top-color: transparent; pointer-events: none;',
+      '  }',
+      '  .yuyu-drawer-arrow {',
+      '    display: inline-flex; color: #64748b; transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);',
+      '  }',
+      '  .yuyu-drawer-arrow.collapsed {',
+      '    transform: rotate(-90deg);',
+      '  }',
+      '  .yuyu-sync-tip {',
+      '    font-size: 10.5px; text-align: center; padding: 4px 6px; border-radius: 5px;',
+      '    background: #f0fdf4; color: #059669; max-height: 0; opacity: 0; overflow: hidden;',
+      '    transform: translateY(4px); transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);',
+      '  }',
+      '  .yuyu-sync-tip.show {',
+      '    max-height: 36px; opacity: 1; transform: translateY(0); margin-top: 6px;',
+      '  }',
+      '</style>',
+      '<div id="yuyu-pill-btn">',
       '  <span style="display:inline-flex;color:#475569;">' + SVG_WALLET + '</span>',
       '  <span style="font-weight:600;font-size:11px;color:#475569;letter-spacing:0.2px;">鱼鱼</span>',
       '  <span id="yuyu-pill-val" style="color:#059669;font-weight:700;font-variant-numeric:tabular-nums;font-size:12.5px;">$' + tokenStore.balance.toFixed(2) + '</span>',
       '</div>',
-      '<div id="yuyu-card-popup" style="display:none;position:absolute;bottom:46px;right:0;width:336px;background:rgba(255,255,255,0.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(226,232,240,0.9);border-radius:16px;box-shadow:0 16px 36px -4px rgba(15,23,42,0.12),0 4px 12px rgba(15,23,42,0.04);padding:16px 18px;color:#0f172a;box-sizing:border-box;">',
+      '<div id="yuyu-card-popup">',
       '  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">',
       '    <div style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:#0f172a;">',
-      '      <div style="width:24px;height:24px;border-radius:6px;background:#eff6ff;border:1px solid #dbeafe;display:flex;align-items:center;justify-content:center;color:#2563eb;">' + SVG_FISH + '</div>',
+      '      <div style="width:24px;height:24px;border-radius:6px;background:#eff6ff;border:1px solid #dbeafe;display:flex;align-items:center;justify-content:center;color:#2563eb;transition:transform 0.2s cubic-bezier(0.34,1.56,0.64,1);">' + SVG_FISH + '</div>',
       '      <span>鱼鱼 API</span>',
       '    </div>',
       '    <div style="display:flex;align-items:center;gap:6px;">',
       '      <div id="yuyu-avatars-row" style="display:flex;gap:5px;"></div>',
-      '      <button id="yuyu-card-refresh" style="background:#f8fafc;border:1px solid #e2e8f0;cursor:pointer;padding:4px;color:#64748b;display:inline-flex;border-radius:5px;transition:all 0.15s;" title="刷新数据">' + SVG_REFRESH + '</button>',
+      '      <button id="yuyu-card-refresh" style="background:#f8fafc;border:1px solid #e2e8f0;cursor:pointer;padding:4px;color:#64748b;display:inline-flex;border-radius:5px;transition:all 0.16s ease;" title="刷新数据">' + SVG_REFRESH + '</button>',
       '    </div>',
       '  </div>',
       '  <div style="text-align:center;padding:4px 0 6px 0;">',
       '    <div style="font-size:11px;color:#64748b;margin-bottom:2px;">可用余额</div>',
-      '    <div style="font-size:34px;font-weight:800;color:#0f172a;letter-spacing:-1px;line-height:1.1;font-variant-numeric:tabular-nums;">$<span id="yuyu-card-bal">' + tokenStore.balance.toFixed(2) + '</span></div>',
-      '    <div style="margin-top:5px;"><span id="yuyu-card-recharge" style="display:inline-flex;align-items:center;background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;font-size:10.5px;padding:2px 8px;border-radius:12px;font-weight:500;font-variant-numeric:tabular-nums;">累计充值 $' + tokenStore.totalRecharged.toFixed(2) + '</span></div>',
+      '    <div style="font-size:34px;font-weight:800;color:#0f172a;letter-spacing:-1px;line-height:1.1;font-variant-numeric:tabular-nums;display:inline-block;">$<span id="yuyu-card-bal">' + tokenStore.balance.toFixed(2) + '</span></div>',
+      '    <div style="margin-top:5px;"><span id="yuyu-card-recharge" style="display:inline-flex;align-items:center;background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;font-size:10.5px;padding:2px 8px;border-radius:12px;font-weight:500;font-variant-numeric:tabular-nums;transition:transform 0.15s ease;">累计充值 $' + tokenStore.totalRecharged.toFixed(2) + '</span></div>',
       '  </div>',
-      '  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:9px 12px;margin:10px 0;display:flex;flex-direction:column;gap:8px;">',
-      '    <div id="yuyu-drawer-toggle" style="display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:600;color:#334155;cursor:pointer;">',
+      '  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:9px 12px;margin:10px 0;display:flex;flex-direction:column;transition:border-color 0.18s;">',
+      '    <div id="yuyu-drawer-toggle" style="display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:600;color:#334155;cursor:pointer;user-select:none;">',
       '      <span>今日用量</span>',
-      '      <span id="yuyu-drawer-arrow" style="display:inline-flex;color:#64748b;transition:transform 0.2s ease;">' + SVG_CHEVRON + '</span>',
+      '      <span id="yuyu-drawer-arrow" class="yuyu-drawer-arrow">' + SVG_CHEVRON + '</span>',
       '    </div>',
-      '    <div id="yuyu-drawer-content" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;border-top:1px dashed #e2e8f0;padding-top:7px;">',
+      '    <div id="yuyu-drawer-content" class="yuyu-drawer-content">',
       '      <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10px;color:#64748b;">实扣</span><span id="yuyu-card-cost" style="font-size:11.5px;font-weight:600;color:#0f172a;font-variant-numeric:tabular-nums;">$' + tokenStore.todayCost.toFixed(4) + '</span></div>',
       '      <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10px;color:#64748b;">Tokens</span><span id="yuyu-card-tokens" style="font-size:11.5px;font-weight:600;color:#0f172a;font-variant-numeric:tabular-nums;">' + tokenStore.todayTokens.toLocaleString() + '</span></div>',
       '      <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10px;color:#64748b;">密钥</span><span id="yuyu-card-keys" style="font-size:11.5px;font-weight:600;color:#0f172a;font-variant-numeric:tabular-nums;">' + tokenStore.keysCount + ' 个</span></div>',
       '    </div>',
       '  </div>',
-      '  <button id="yuyu-card-sync" style="width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 0;background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-size:11.5px;font-weight:500;color:#334155;transition:all 0.15s ease;">',
+      '  <button id="yuyu-card-sync" style="width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 0;background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;cursor:pointer;font-size:11.5px;font-weight:500;color:#334155;transition:all 0.16s cubic-bezier(0.16,1,0.3,1);user-select:none;">',
       '    <span style="display:inline-flex;">' + SVG_BROWSER + '</span>',
       '    <span id="yuyu-sync-label">从浏览器同步账号</span>',
       '  </button>',
-      '  <div id="yuyu-sync-tip" style="display:none;font-size:10.5px;text-align:center;margin-top:6px;padding:4px 6px;border-radius:4px;background:#f0fdf4;color:#059669;"></div>',
+      '  <div id="yuyu-sync-tip" class="yuyu-sync-tip"></div>',
       '  <div style="margin-top:10px;padding-top:6px;border-top:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#94a3b8;">',
       '    <span id="yuyu-sync-time">已同步 ' + tokenStore.lastSync + '</span>',
-      '    <span style="display:inline-flex;align-items:center;gap:4px;color:#10b981;font-weight:500;"><span style="width:5px;height:5px;border-radius:50%;background:#10b981;"></span><span>本地直连</span></span>',
+      '    <span style="display:inline-flex;align-items:center;gap:4px;color:#10b981;font-weight:500;"><span style="width:5px;height:5px;border-radius:50%;background:#10b981;box-shadow:0 0 0 2px rgba(16,185,129,0.2);"></span><span>本地直连</span></span>',
       '  </div>',
       '</div>'
     ].join('\n');
@@ -378,30 +476,30 @@
     var drawerContent = container.querySelector('#yuyu-drawer-content');
     var drawerArrow = container.querySelector('#yuyu-drawer-arrow');
 
+    // 抽屉平滑阻尼折叠展开
     var isDrawerOpen = true;
     drawerToggle.addEventListener('click', function(e) {
       e.stopPropagation();
       isDrawerOpen = !isDrawerOpen;
-      drawerContent.style.display = isDrawerOpen ? 'grid' : 'none';
-      drawerArrow.style.transform = isDrawerOpen ? 'none' : 'rotate(-90deg)';
+      if (isDrawerOpen) {
+        drawerContent.classList.remove('collapsed');
+        drawerArrow.classList.remove('collapsed');
+      } else {
+        drawerContent.classList.add('collapsed');
+        drawerArrow.classList.add('collapsed');
+      }
     });
 
-    pill.addEventListener('mouseenter', function() {
-      pill.style.transform = 'translateY(-1px)';
-      pill.style.boxShadow = '0 6px 18px rgba(0,0,0,0.1)';
-    });
-    pill.addEventListener('mouseleave', function() {
-      pill.style.transform = 'none';
-      pill.style.boxShadow = '0 4px 14px rgba(0,0,0,0.06)';
-    });
-
+    // 弹窗优雅从右下角呼出与隐藏
     var isOpen = false;
     pill.addEventListener('click', function(e) {
       e.stopPropagation();
       isOpen = !isOpen;
-      card.style.display = isOpen ? 'block' : 'none';
       if (isOpen) {
+        card.classList.add('is-open');
         fetchRemoteBalance(null, { syncBrowser: true });
+      } else {
+        card.classList.remove('is-open');
       }
     });
 
@@ -409,24 +507,27 @@
     document.addEventListener('click', function() {
       if (isOpen) {
         isOpen = false;
-        card.style.display = 'none';
+        card.classList.remove('is-open');
       }
     });
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' && isOpen) {
         isOpen = false;
-        card.style.display = 'none';
+        card.classList.remove('is-open');
       }
     });
 
-    // 刷新按钮
+    // 刷新按钮带贝塞尔轻微回弹旋转
     refreshBtn.addEventListener('click', function() {
-      refreshBtn.style.transform = 'rotate(360deg)';
-      refreshBtn.style.transition = 'transform 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
-      setTimeout(function() {
-        refreshBtn.style.transform = 'none';
-        refreshBtn.style.transition = 'none';
-      }, 600);
+      var icon = refreshBtn.querySelector('svg');
+      if (icon) {
+        icon.style.transition = 'transform 0.65s cubic-bezier(0.34, 1.3, 0.64, 1)';
+        icon.style.transform = 'rotate(360deg)';
+        setTimeout(function() {
+          icon.style.transition = 'none';
+          icon.style.transform = 'none';
+        }, 650);
+      }
       fetchRemoteBalance(function(data) {
         showTip('已刷新 ' + data.email + ' ($' + data.balance.toFixed(2) + ')');
       }, { syncBrowser: false });
