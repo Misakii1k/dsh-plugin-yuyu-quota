@@ -1,0 +1,9 @@
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozMzksImVtYWlsIjoiODc4NTAzODIwQHFxLmNvbSIsInJvbGUiOiJ1c2VyIiwidG9rZW5fdmVyc2lvbiI6ODI5Mzc5NTMwNzQ1NDMxMzk2LCJzaWQiOiJmZTJkZTdhMjllZTY4ZDYxZDdhY2EzZmJiMzUwYmNkOCIsImJuZCI6IjkwOTNkY2U2OTFhMmQzNzVjMjhkN2E5M2JjNDhmNDFjIiwiZXhwIjoxNzkzMDExODM3LCJuYmYiOjE3OTI5MjU0MzcsImlhdCI6MTc5MjkyNTQzN30.kXVOiRZkoWzlrIMi4z76lE2LrESzP6ufs-DZONGIYw4",
+  "refreshInterval": "3m",
+  "alertThreshold": 2,
+  "baseUrl": "https://sub.anzhiyu.com",
+  "lastSyncedAt": "2026-10-25T11:19:55.375Z",
+  "cachedEmail": "878503820@qq.com",
+  "cachedBalance": 7.02031123
+}
