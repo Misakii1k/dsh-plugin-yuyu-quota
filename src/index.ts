@@ -47,19 +47,43 @@ export const Config: Schema<PluginConfig> = Schema.object({
  */
 function resolveConfigFilePath(): string {
   const candidates = [
-    path.join(process.cwd(), 'yuyu-config.json'),
-    path.resolve(__dirname, '..', 'yuyu-config.json')
+    path.resolve(__dirname, '..', 'yuyu-config.json'),
+    path.join(process.cwd(), 'yuyu-config.json')
   ];
   for (const file of candidates) {
     if (fs.existsSync(file)) return file;
   }
-  return candidates[1];
+  return candidates[0];
+}
+
+function sendJson(response: any, status: number, payload: unknown) {
+  response.writeHead(status, {
+    'cache-control': 'no-store',
+    'content-type': 'application/json; charset=utf-8',
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function readJsonBody(request: any): Promise<any> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch {
+        resolve({});
+      }
+    });
+    request.on('error', () => resolve({}));
+  });
 }
 
 export function apply(ctx: Context, config: PluginConfig) {
   const logger = ctx.logger ? ctx.logger('yuyu-quota') : console;
 
-  // 尝试从本地持久化配置文件恢复（优先工作目录，其次插件包自身目录）
+  // 尝试从本地持久化配置文件恢复（优先插件包目录，其次工作目录）
   const localConfigFile = resolveConfigFilePath();
   if (!config.token && fs.existsSync(localConfigFile)) {
     try {
@@ -76,7 +100,7 @@ export function apply(ctx: Context, config: PluginConfig) {
   let timer: NodeJS.Timeout | null = null;
 
   // 1. 数据刷新逻辑
-  const refreshData = async () => {
+  const refreshData = async (): Promise<BalanceSnapshot> => {
     try {
       latestSnapshot = await client.getBalanceSnapshot(config.alertThreshold);
       if (latestSnapshot.success) {
@@ -87,6 +111,7 @@ export function apply(ctx: Context, config: PluginConfig) {
     } catch (e: any) {
       logger.error?.(`[鱼鱼API] 刷新异常: ${e?.message || e}`);
     }
+    return latestSnapshot!;
   };
 
   // 2. 注册 DeepSeek Harness Agent Tool
@@ -99,7 +124,33 @@ export function apply(ctx: Context, config: PluginConfig) {
   }
 
   // 3. 注册从浏览器一键同步命令与后端处理
-  const syncCredentials = async (forceCapture = false) => {
+  const syncCredentials = async (forceCapture = false, manualToken?: string) => {
+    if (manualToken && manualToken.trim()) {
+      config.token = manualToken.trim();
+      client.updateToken(config.token);
+      const snap = await refreshData();
+      if (snap && snap.success) {
+        try {
+          fs.writeFileSync(localConfigFile, JSON.stringify({
+            token: config.token,
+            refreshInterval: config.refreshInterval || '3m',
+            alertThreshold: config.alertThreshold || 2.0,
+            baseUrl: config.baseUrl || 'https://sub.anzhiyu.com',
+            lastSyncedAt: new Date().toISOString(),
+            cachedEmail: snap.email,
+            cachedBalance: snap.balance
+          }, null, 2), 'utf8');
+        } catch {}
+      }
+      return {
+        success: snap?.success ?? false,
+        browser: '手动配置',
+        email: snap?.email,
+        balance: snap?.balance,
+        message: snap?.success ? 'Token 验证并同步成功！' : (snap?.error || 'Token 验证失败')
+      };
+    }
+
     logger.info?.('[鱼鱼API] 正在智能扫描浏览器登录凭据...');
     let res = await scanRunningBrowsersForToken();
     if (!res.success && forceCapture) {
@@ -124,6 +175,19 @@ export function apply(ctx: Context, config: PluginConfig) {
       } catch {}
 
       await refreshData();
+    } else if (config.token) {
+      // 浏览器未打开时，直接用已有有效 Token 刷新最新数据
+      const snap = await refreshData();
+      if (snap && snap.success) {
+        return {
+          success: true,
+          browser: '已保存凭证',
+          token: config.token,
+          email: snap.email,
+          balance: snap.balance,
+          message: '已使用现有有效凭证刷新最新实时数据！'
+        };
+      }
     }
     return res;
   };
@@ -136,7 +200,53 @@ export function apply(ctx: Context, config: PluginConfig) {
       });
   }
 
-  // 4. 注册 DSH Web 状态栏组件与 API 路由
+  // 4. 注册 DSH 官方 webServer 同源路由（解决浏览器前端跨域 Failed to fetch 问题）
+  (ctx as any).inject?.(['webServer'], (hostCtx: any) => {
+    hostCtx.effect(() => {
+      const disposeSnapshot = hostCtx.webServer.register({
+        kind: 'exact',
+        path: '/yuyu-quota/api/snapshot',
+        handler: async (request: any, response: any) => {
+          if (request.method !== 'GET') {
+            response.writeHead(405, { allow: 'GET' });
+            response.end();
+            return;
+          }
+          const snap = await refreshData();
+          sendJson(response, 200, {
+            ok: true,
+            snapshot: snap
+          });
+        }
+      });
+
+      const disposeSync = hostCtx.webServer.register({
+        kind: 'exact',
+        path: '/yuyu-quota/api/sync',
+        handler: async (request: any, response: any) => {
+          if (request.method !== 'POST') {
+            response.writeHead(405, { allow: 'POST' });
+            response.end();
+            return;
+          }
+          const body = await readJsonBody(request);
+          const result = await syncCredentials(Boolean(body?.forceCapture), body?.token);
+          sendJson(response, 200, {
+            ok: Boolean(result?.success),
+            ...result,
+            snapshot: latestSnapshot
+          });
+        }
+      });
+
+      return () => {
+        if (typeof disposeSnapshot === 'function') disposeSnapshot();
+        if (typeof disposeSync === 'function') disposeSync();
+      };
+    }, 'yuyu-quota: http routes');
+  });
+
+  // 兼容旧版 ctx.web
   if ((ctx as any).web) {
     const web = (ctx as any).web;
     web.addStatusBarItem?.({
@@ -148,19 +258,6 @@ export function apply(ctx: Context, config: PluginConfig) {
         }
         return renderWidgetHtml(latestSnapshot);
       }
-    });
-
-    web.get?.('/api/yuyu/snapshot', async (_req: any, res: any) => {
-      if (!latestSnapshot) await refreshData();
-      res.json(latestSnapshot);
-    });
-
-    web.post?.('/api/yuyu/sync', async (_req: any, res: any) => {
-      const result = await syncCredentials(true);
-      res.json({
-        ...result,
-        snapshot: latestSnapshot
-      });
     });
   }
 

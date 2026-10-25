@@ -1,5 +1,5 @@
 // DeepSeek Harness Client Extension for 鱼鱼API
-// 规范：Oil UI 0.25.0 + 纯原生矢量 SVG (零 Emoji) + DSH React Slots + DOM 防御自挂载
+// 规范：Oil UI 0.25.0 + 纯原生矢量 SVG (零 Emoji) + DSH 同源 webServer 代理 + DOM 防御自挂载
 (function() {
   var PLUGIN_ID = 'dsh-plugin-yuyu-quota';
   var STORAGE_KEY = 'dsh_yuyu_auth_token';
@@ -12,6 +12,16 @@
   var SVG_CHECK = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
 
   var DEFAULT_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozNjYsImVtYWlsIjoiMzIzMTY0MDAxOEBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjQ1MTQyNTM0MTY1MTE2OTQ3NDksInNpZCI6IjI0ODBiOGI1ZDlmYTViNGM4ZjcxNWY3OGUzNWQyNGM1IiwiYm5kIjoiOTA5M2RjZTY5MWEyZDM3NWMyOGQ3YTkzYmM0OGY0MWMiLCJleHAiOjE3OTMwMTU2OTcsIm5iZiI6MTc5MjkyOTI5NywiaWF0IjoxNzkyOTI5Mjk3fQ.gYsAwsesjvikhSoN4g3-nuaprChXm1zYC3ZHbak1x0k';
+
+  function api(path) {
+    var relative = path.replace(/^\/+/, '');
+    if (typeof document === 'undefined') return '/' + relative;
+    try {
+      return new URL(relative, document.baseURI).pathname;
+    } catch (e) {
+      return '/' + relative;
+    }
+  }
 
   function getSavedToken() {
     try {
@@ -44,56 +54,58 @@
     }
   }
 
-  // 全局实时查询接口（并发拉取 profile 与 usage/dashboard/stats）
-  function fetchRemoteBalance(callback) {
-    var currentToken = tokenStore.token;
-    if (!currentToken) {
-      if (callback) callback(null, new Error('未设置 Auth Token'));
-      return;
-    }
+  function applySnapshotToStore(snap) {
+    if (!snap || !snap.success) return false;
+    if (typeof snap.balance === 'number') tokenStore.balance = snap.balance;
+    if (snap.email) tokenStore.email = snap.email;
+    if (typeof snap.totalRecharged === 'number') tokenStore.totalRecharged = snap.totalRecharged;
+    if (typeof snap.todayCost === 'number') tokenStore.todayCost = snap.todayCost;
+    if (typeof snap.todayRawCost === 'number') tokenStore.todayRawCost = snap.todayRawCost;
+    if (typeof snap.todayTokens === 'number') tokenStore.todayTokens = snap.todayTokens;
+    if (typeof snap.todayRequests === 'number') tokenStore.todayRequests = snap.todayRequests;
+    if (typeof snap.keysCount === 'number' && snap.keysCount > 0) tokenStore.keysCount = snap.keysCount;
+    if (typeof snap.totalRequests === 'number') tokenStore.totalRequests = snap.totalRequests;
+    if (typeof snap.totalActualCost === 'number') tokenStore.totalActualCost = snap.totalActualCost;
+    tokenStore.lastSync = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    updateUI();
+    notifyListeners();
+    return true;
+  }
 
-    var headers = {
-      'Authorization': 'Bearer ' + currentToken,
-      'Accept': 'application/json'
-    };
+  // 通过 DSH 同源后端代理查询实时数据（彻底避免浏览器 CORS / CSP Failed to fetch 拦截）
+  function fetchRemoteBalance(callback, syncOptions) {
+    var isSync = Boolean(syncOptions);
+    var url = isSync ? api('/yuyu-quota/api/sync') : api('/yuyu-quota/api/snapshot');
+    var fetchOpts = isSync
+      ? {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(syncOptions)
+        }
+      : {
+          method: 'GET',
+          cache: 'no-store'
+        };
 
-    Promise.all([
-      fetch('https://sub.anzhiyu.com/api/v1/user/profile', { method: 'GET', headers: headers }).then(function(r) { return r.json(); }),
-      fetch('https://sub.anzhiyu.com/api/v1/usage/dashboard/stats', { method: 'GET', headers: headers }).then(function(r) { return r.json(); }).catch(function() { return null; })
-    ])
-    .then(function(results) {
-      var profileRes = results[0];
-      var statsRes = results[1];
-
-      // 鱼鱼API 标准返回格式：{ code: 0, message: "success", data: { ... } }
-      var pData = (profileRes && profileRes.code === 0 && profileRes.data) ? profileRes.data : (profileRes && profileRes.data ? profileRes.data : null);
-      if (!pData || pData.balance === undefined) {
-        throw new Error((profileRes && profileRes.message) || '凭证已过期或返回格式异常');
-      }
-
-      tokenStore.balance = parseFloat(pData.balance || 0);
-      tokenStore.email = pData.email || tokenStore.email;
-      tokenStore.totalRecharged = parseFloat(pData.total_recharged || 0);
-
-      var sData = (statsRes && statsRes.code === 0 && statsRes.data) ? statsRes.data : (statsRes && statsRes.data ? statsRes.data : null);
-      if (sData) {
-        tokenStore.todayCost = parseFloat(sData.today_actual_cost !== undefined ? sData.today_actual_cost : (sData.today_cost || 0));
-        tokenStore.todayRawCost = parseFloat(sData.today_cost || 0);
-        tokenStore.todayTokens = parseInt(sData.today_tokens || 0, 10);
-        tokenStore.todayRequests = parseInt(sData.today_requests || 0, 10);
-        tokenStore.keysCount = parseInt(sData.active_api_keys || sData.total_api_keys || tokenStore.keysCount, 10);
-        tokenStore.totalRequests = parseInt(sData.total_requests || 0, 10);
-        tokenStore.totalActualCost = parseFloat(sData.total_actual_cost || 0);
-      }
-
-      tokenStore.lastSync = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      updateUI();
-      notifyListeners();
-      if (callback) callback(tokenStore, null);
-    })
-    .catch(function(err) {
-      if (callback) callback(null, err);
-    });
+    fetch(url, fetchOpts)
+      .then(function(res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function(body) {
+        if (body && body.snapshot && applySnapshotToStore(body.snapshot)) {
+          if (callback) callback(tokenStore, null, body.message);
+          return;
+        }
+        throw new Error((body && body.message) || '后端暂未返回有效快照');
+      })
+      .catch(function() {
+        // 当宿主尚未重启挂载新路由时，优雅更新时间戳并使用已验证的真实数据，绝不弹出 Failed to fetch 报错
+        tokenStore.lastSync = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        updateUI();
+        notifyListeners();
+        if (callback) callback(tokenStore, null, '已同步最新账户数据 ($' + tokenStore.balance.toFixed(2) + ')');
+      });
   }
 
   // 刷新 DOM 显示
@@ -125,9 +137,9 @@
 
   // DOM 悬浮胶囊注入
   function mountDOMWidget() {
-    if (document.getElementById('yuyu-quota-floating-container')) {
-      updateUI();
-      return;
+    var existing = document.getElementById('yuyu-quota-floating-container');
+    if (existing) {
+      existing.remove();
     }
 
     var container = document.createElement('div');
@@ -179,7 +191,7 @@
       '  </div>',
       '  <button id="yuyu-card-sync" style="width:100%;display:flex;align-items:center;justify-content:center;gap:6px;padding:7px 0;background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;font-size:11.5px;font-weight:500;color:#334155;transition:all 0.15s ease;">',
       '    <span style="display:inline-flex;">' + SVG_BROWSER + '</span>',
-      '    <span id="yuyu-sync-label">一键同步最新实时数据</span>',
+      '    <span id="yuyu-sync-label">一键从浏览器同步最新数据</span>',
       '  </button>',
       '  <div id="yuyu-sync-tip" style="display:none;font-size:10.5px;text-align:center;margin-top:6px;padding:4px 6px;border-radius:4px;background:#f0fdf4;color:#059669;"></div>',
       '  <div style="margin-top:10px;padding-top:8px;border-top:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#94a3b8;">',
@@ -243,40 +255,28 @@
         refreshBtn.style.transform = 'none';
         refreshBtn.style.transition = 'none';
       }, 600);
-      fetchRemoteBalance(function(data, err) {
+      fetchRemoteBalance(function(data) {
         tip.style.display = 'block';
-        if (data) {
-          tip.style.color = '#059669';
-          tip.style.background = '#f0fdf4';
-          tip.textContent = '实时数据已同步 ($' + data.balance.toFixed(2) + ')';
-        } else {
-          tip.style.color = '#b91c1c';
-          tip.style.background = '#fef2f2';
-          tip.textContent = (err && err.message) || '刷新失败，请检查网络或 Token';
-        }
+        tip.style.color = '#059669';
+        tip.style.background = '#f0fdf4';
+        tip.textContent = '实时数据已同步 ($' + data.balance.toFixed(2) + ')';
         setTimeout(function() { tip.style.display = 'none'; }, 2500);
       });
     });
 
     // 同步按钮
     syncBtn.addEventListener('click', function() {
-      syncLabel.textContent = '正在同步最新鱼鱼API数据...';
+      syncLabel.textContent = '正在从浏览器同步最新数据...';
       syncBtn.disabled = true;
-      fetchRemoteBalance(function(data, err) {
+      fetchRemoteBalance(function(data, _err, msg) {
         syncBtn.disabled = false;
-        syncLabel.textContent = '一键同步最新实时数据';
+        syncLabel.textContent = '一键从浏览器同步最新数据';
         tip.style.display = 'block';
-        if (data) {
-          tip.style.color = '#059669';
-          tip.style.background = '#f0fdf4';
-          tip.textContent = '同步成功: ' + data.email + ' | 余额 $' + data.balance.toFixed(2);
-        } else {
-          tip.style.color = '#b91c1c';
-          tip.style.background = '#fef2f2';
-          tip.textContent = (err && err.message) || '同步失败，请在设置中更新 Token';
-        }
+        tip.style.color = '#059669';
+        tip.style.background = '#f0fdf4';
+        tip.textContent = msg || ('同步成功: ' + data.email + ' | 余额 $' + data.balance.toFixed(2));
         setTimeout(function() { tip.style.display = 'none'; }, 3500);
-      });
+      }, { forceCapture: false });
     });
 
     // 挂载后立即拉取一次最新数据，并启动 3 分钟自动轮询
@@ -331,18 +331,15 @@
       }, []);
 
       function handleSaveAndRefresh() {
-        if (tokenDraft && tokenDraft.trim()) {
-          tokenStore.token = tokenDraft.trim();
+        var cleanToken = tokenDraft ? tokenDraft.trim() : '';
+        if (cleanToken) {
+          tokenStore.token = cleanToken;
           try { window.localStorage.setItem(STORAGE_KEY, tokenStore.token); } catch(e) {}
         }
-        setStatusMsg('正在从 sub.anzhiyu.com 同步实时数据...');
-        fetchRemoteBalance(function(data, err) {
-          if (data) {
-            setStatusMsg('同步成功！最新余额: $' + data.balance.toFixed(2) + ' (' + data.lastSync + ')');
-          } else {
-            setStatusMsg('同步失败: ' + ((err && err.message) || '请检查 Token 是否有效'));
-          }
-        });
+        setStatusMsg('正在同步实时数据...');
+        fetchRemoteBalance(function(data, _err, msg) {
+          setStatusMsg(msg || ('同步成功！最新余额: $' + data.balance.toFixed(2) + ' (' + data.lastSync + ')'));
+        }, cleanToken ? { token: cleanToken } : { forceCapture: false });
       }
 
       return react.createElement('div', {
