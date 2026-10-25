@@ -15,6 +15,7 @@ export interface SyncResult {
 interface BrowserCandidate {
   name: string;
   portFile: string;
+  channel?: string;
 }
 
 /**
@@ -25,10 +26,12 @@ function getBrowserCandidates(): BrowserCandidate[] {
   return [
     {
       name: 'Google Chrome',
+      channel: 'chrome',
       portFile: path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort')
     },
     {
       name: 'Microsoft Edge',
+      channel: 'msedge',
       portFile: path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort')
     },
     {
@@ -81,6 +84,38 @@ async function getPuppeteer(): Promise<any> {
 }
 
 /**
+ * 从已连接的 Browser 实例中检索 sub.anzhiyu.com 标签页并提取 Token
+ */
+async function extractTokenFromBrowser(browser: any, browserName: string): Promise<SyncResult | null> {
+  const pages = await browser.pages();
+  const targetPage = pages.find((p: any) => p.url().includes('sub.anzhiyu.com'));
+  if (!targetPage) {
+    return null;
+  }
+
+  const token = await targetPage.evaluate(() => localStorage.getItem('auth_token'));
+  if (token) {
+    const client = new YuyuApiClient(token);
+    const profile = await client.getProfile().catch(() => null);
+    return {
+      success: true,
+      browser: browserName,
+      token,
+      email: profile?.email || '已连接',
+      balance: profile ? Number(profile.balance || 0) : undefined,
+      message: `成功从 ${browserName} 提取凭据并验证成功！`
+    };
+  } else {
+    return {
+      success: false,
+      browser: browserName,
+      needsLogin: true,
+      message: `检测到 ${browserName} 已打开鱼鱼API页面，但尚未完成登录`
+    };
+  }
+}
+
+/**
  * 智能扫描运行中的所有 Chromium 浏览器活动标签页并提取凭证
  */
 export async function scanRunningBrowsersForToken(): Promise<SyncResult> {
@@ -88,6 +123,19 @@ export async function scanRunningBrowsersForToken(): Promise<SyncResult> {
   const puppeteer = await getPuppeteer();
 
   for (const candidate of candidates) {
+    // 1. 优先尝试 Chrome 144+ 原生 channel 自动连接
+    if (candidate.channel) {
+      try {
+        const browser = await puppeteer.connect({ channel: candidate.channel });
+        const result = await extractTokenFromBrowser(browser, candidate.name);
+        await browser.disconnect().catch(() => {});
+        if (result) return result;
+      } catch {
+        // channel 连接失败时继续尝试 DevToolsActivePort 文件
+      }
+    }
+
+    // 2. 尝试通过 DevToolsActivePort 文件连接
     if (!fs.existsSync(candidate.portFile)) {
       continue;
     }
@@ -101,39 +149,10 @@ export async function scanRunningBrowsersForToken(): Promise<SyncResult> {
 
       const wsEndpoint = `ws://127.0.0.1:${port}${wsPath}`;
       const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint });
-      const pages = await browser.pages();
-
-      const targetPage = pages.find((p: any) => p.url().includes('sub.anzhiyu.com'));
-      if (targetPage) {
-        const token = await targetPage.evaluate(() => localStorage.getItem('auth_token'));
-        await browser.disconnect();
-
-        if (token) {
-          // 验证并获取最新余额
-          const client = new YuyuApiClient(token);
-          const profile = await client.getProfile().catch(() => null);
-
-          return {
-            success: true,
-            browser: candidate.name,
-            token,
-            email: profile?.email || '已连接',
-            balance: profile ? Number(profile.balance || 0) : undefined,
-            message: `成功从 ${candidate.name} 提取凭据并验证成功！`
-          };
-        } else {
-          return {
-            success: false,
-            browser: candidate.name,
-            needsLogin: true,
-            message: `检测到 ${candidate.name} 已打开鱼鱼API页面，但尚未完成登录`
-          };
-        }
-      }
-
-      await browser.disconnect();
-    } catch (err: any) {
-      // 当前浏览器连接异常或拒绝，继续尝试下一个候选
+      const result = await extractTokenFromBrowser(browser, candidate.name);
+      await browser.disconnect().catch(() => {});
+      if (result) return result;
+    } catch {
       continue;
     }
   }
@@ -199,27 +218,32 @@ export async function launchAndCaptureToken(timeoutMs = 120000): Promise<SyncRes
 
         return {
           success: true,
-          browser: path.basename(browserPath),
+          browser: '独立登录窗口',
           token,
-          email: profile?.email || '已连接',
+          email: profile?.email || '已验证',
           balance: profile ? Number(profile.balance || 0) : undefined,
-          message: '登录捕获成功，凭证已自动就绪！'
+          message: '登录成功并已自动同步凭据！'
         };
       }
 
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 1200));
     }
 
     await browser.close().catch(() => {});
+    try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
+
     return {
       success: false,
-      message: '登录超时或窗口被提前关闭，未捕获到登录凭证'
+      message: '登录窗口已关闭或等待超时，未能捕获到登录凭据'
     };
   } catch (err: any) {
-    if (browser) await browser.close().catch(() => {});
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    try { fs.rmSync(tempProfileDir, { recursive: true, force: true }); } catch {}
     return {
       success: false,
-      message: `拉起登录窗口失败: ${err?.message || err}`
+      message: `调起登录窗口异常: ${err?.message || err}`
     };
   }
 }

@@ -17,7 +17,7 @@ async function main() {
 
   if (scanRes.success && scanRes.token) {
     console.log(`[OK] 发现来自【${scanRes.browser}】的已登录会话！`);
-    console.log(`[OK] 验证成功: 邮箱 ${scanRes.email} | 当前可用余额 ¥${scanRes.balance?.toFixed(2)} 元\n`);
+    console.log(`[OK] 验证成功: 邮箱 ${scanRes.email} | 当前可用余额 $${scanRes.balance?.toFixed(2)}\n`);
     finalToken = scanRes.token;
     userEmail = scanRes.email || '';
     userBalance = scanRes.balance || 0;
@@ -33,7 +33,7 @@ async function main() {
     }
 
     console.log(`\n[OK] 登录完成，凭证已成功捕获！`);
-    console.log(`[OK] 验证成功: 邮箱 ${captureRes.email} | 当前可用余额 ¥${captureRes.balance?.toFixed(2)} 元\n`);
+    console.log(`[OK] 验证成功: 邮箱 ${captureRes.email} | 当前可用余额 $${captureRes.balance?.toFixed(2)}\n`);
     finalToken = captureRes.token;
     userEmail = captureRes.email || '';
     userBalance = captureRes.balance || 0;
@@ -57,7 +57,7 @@ async function main() {
   console.log(`[OK] 配置已成功保存至: ${configFile}`);
   console.log('\n========================================================');
   console.log(' [全部就绪] 鱼鱼API 插件配置已全自动完成！');
-  console.log(` 当前可用余额: ¥${userBalance.toFixed(2)} 元`);
+  console.log(` 当前可用余额: $${userBalance.toFixed(2)}`);
   console.log(' 现在您可以直接启动并享受 DeepSeek Harness 实时余额监控了。');
   console.log('========================================================\n');
 }

@@ -34,9 +34,11 @@ console.log('-------------------------------------------');
 console.log('原始数据结构:');
 console.log({
   '邮箱': snapshot.email,
-  '可用余额': `¥${snapshot.balance.toFixed(2)}`,
-  '今日花费': `¥${snapshot.todayCost.toFixed(4)}`,
+  '可用余额': `$${snapshot.balance.toFixed(2)}`,
+  '今日实扣花费': `$${snapshot.todayCost.toFixed(4)}`,
+  '今日原价花费': `$${snapshot.todayRawCost.toFixed(4)}`,
   '今日Token数': snapshot.todayTokens,
+  '关联密钥数': snapshot.keysCount,
   '低额警报状态': snapshot.isLowBalance ? '[触发预警]' : '[正常]',
   '耗时': `${Date.now() - snapshot.timestamp} ms`
 });

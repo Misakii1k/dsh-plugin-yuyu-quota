@@ -19,11 +19,16 @@ export interface UsageStats {
     total_requests: number;
     total_tokens: number;
     total_cost: number;
+    total_actual_cost: number;
     today_requests: number;
     today_tokens: number;
     today_cost: number;
+    today_actual_cost: number;
+    today_balance_cost?: number;
     today_input_tokens: number;
     today_output_tokens: number;
+    rpm?: number;
+    tpm?: number;
 }
 export interface ApiKeyItem {
     id: number;
@@ -46,9 +51,13 @@ export interface BalanceSnapshot {
     email: string;
     balance: number;
     frozenBalance: number;
+    totalRecharged: number;
     todayCost: number;
+    todayRawCost: number;
     todayTokens: number;
     todayRequests: number;
+    totalRequests: number;
+    totalActualCost: number;
     keysCount: number;
     keysSummary: string[];
     isLowBalance: boolean;
@@ -62,7 +71,7 @@ export interface PluginConfig {
     token: string;
     /** 定时刷新频率 (预设：30秒、1分钟、3分钟、5分钟) */
     refreshInterval: RefreshInterval;
-    /** 低额警示阈值（单位：元，默认 2.00 元） */
+    /** 低额警示阈值（单位：$，默认 2.00） */
     alertThreshold: number;
     /** API 基础服务地址，默认 https://sub.anzhiyu.com */
     baseUrl?: string;

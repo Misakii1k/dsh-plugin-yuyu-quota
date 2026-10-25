@@ -21,14 +21,24 @@ export const ICONS = {
  * 3. 完整交互：支持点击外部自收起、Esc关闭、同步旋转反馈、一键提取
  * 4. 纯净矢量：全原生 SVG，零依赖、自适应深色/浅色模式
  */
+function escapeHtml(str: string): string {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
   const isAlert = snapshot.isLowBalance;
   const balanceInt = Math.floor(snapshot.balance);
-  const balanceDec = (snapshot.balance - balanceInt).toFixed(2).substring(1); // .02
-  const formattedBalance = snapshot.success ? `¥${snapshot.balance.toFixed(2)}` : '未连接';
+  const balanceDec = (snapshot.balance - balanceInt).toFixed(2).substring(1); // .81
+  const formattedBalance = snapshot.success ? `$${snapshot.balance.toFixed(2)}` : '未连接';
+  const safeEmail = escapeHtml(snapshot.email || '未登录');
 
   const alertBadgeHtml = isAlert
-    ? `<span style="display:inline-flex;align-items:center;color:#ef4444;margin-right:2px;" title="余额低于 ¥${snapshot.alertThreshold.toFixed(2)} 预警线">${ICONS.alert}</span>`
+    ? `<span style="display:inline-flex;align-items:center;color:#ef4444;margin-right:2px;" title="余额低于 $${snapshot.alertThreshold.toFixed(2)} 预警线">${ICONS.alert}</span>`
     : '';
 
   return `
@@ -143,10 +153,10 @@ export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
     <div style="margin-bottom:12px;padding:10px 12px;background:${isAlert ? '#fff1f2' : '#f0fdf4'};border:1px solid ${isAlert ? '#fecdd3' : '#bbf7d0'};border-radius:8px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
         <span style="font-size:11px;color:${isAlert ? '#9f1239' : '#166534'};font-weight:500;">可用总余额</span>
-        <span style="font-size:10px;color:#64748b;font-variant-numeric:tabular-nums;">${snapshot.email || '未登录'}</span>
+        <span style="font-size:10px;color:#64748b;font-variant-numeric:tabular-nums;">${safeEmail}</span>
       </div>
       <div style="margin-top:2px;display:flex;align-items:baseline;gap:2px;">
-        <span style="font-size:14px;font-weight:600;color:${isAlert ? '#e11d48' : '#15803d'};">¥</span>
+        <span style="font-size:14px;font-weight:600;color:${isAlert ? '#e11d48' : '#15803d'};">$</span>
         <span style="font-size:24px;font-weight:700;color:${isAlert ? '#e11d48' : '#15803d'};font-variant-numeric:tabular-nums;letter-spacing:-0.5px;">${snapshot.success ? `${balanceInt}${balanceDec}` : '0.00'}</span>
         ${isAlert ? `<span style="margin-left:auto;font-size:10px;color:#e11d48;font-weight:600;background:#ffe4e6;padding:1px 5px;border-radius:4px;">余额偏低</span>` : ''}
       </div>
@@ -155,8 +165,8 @@ export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
     <!-- 数据指标网格 (2x2 对齐布局，等宽数字) -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">
       <div class="yuyu-grid-cell">
-        <span style="color:#64748b;font-size:10px;">今日消耗金额</span>
-        <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">¥${snapshot.todayCost.toFixed(4)}</span>
+        <span style="color:#64748b;font-size:10px;">今日余额消耗</span>
+        <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">$${snapshot.todayCost.toFixed(4)}</span>
       </div>
       <div class="yuyu-grid-cell">
         <span style="color:#64748b;font-size:10px;">今日消耗 Tokens</span>

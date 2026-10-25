@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Context, Schema } from 'cordis';
 import { YuyuApiClient } from './api.js';
 import { createYuyuBalanceTool } from './tool.js';
@@ -8,6 +9,9 @@ import { scanRunningBrowsersForToken, launchAndCaptureToken } from './browser-sy
 import { PluginConfig, BalanceSnapshot, RefreshInterval } from './types.js';
 
 export const name = 'dsh-plugin-yuyu-quota';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * 刷新间隔映射表 (ms)
@@ -32,23 +36,37 @@ export const Config: Schema<PluginConfig> = Schema.object({
     .description('定时刷新频率预设 (可选：30秒、1分钟、3分钟、5分钟)'),
   alertThreshold: Schema.number()
     .default(2.0)
-    .description('低额提醒阈值 (单位: 元，低于此金额在胶囊旁显示原生矢量警示徽标)'),
+    .description('低额提醒阈值 (单位: $，低于此金额在胶囊旁显示原生矢量警示徽标)'),
   baseUrl: Schema.string()
     .default('https://sub.anzhiyu.com')
     .description('鱼鱼API 服务端接口地址 (默认 https://sub.anzhiyu.com，支持国内直连)')
 });
 
+/**
+ * 查找本地持久化配置文件路径
+ */
+function resolveConfigFilePath(): string {
+  const candidates = [
+    path.join(process.cwd(), 'yuyu-config.json'),
+    path.resolve(__dirname, '..', 'yuyu-config.json')
+  ];
+  for (const file of candidates) {
+    if (fs.existsSync(file)) return file;
+  }
+  return candidates[1];
+}
+
 export function apply(ctx: Context, config: PluginConfig) {
   const logger = ctx.logger ? ctx.logger('yuyu-quota') : console;
 
-  // 尝试从本地持久化配置文件恢复（如果有）
-  const localConfigFile = path.join(process.cwd(), 'yuyu-config.json');
+  // 尝试从本地持久化配置文件恢复（优先工作目录，其次插件包自身目录）
+  const localConfigFile = resolveConfigFilePath();
   if (!config.token && fs.existsSync(localConfigFile)) {
     try {
       const saved = JSON.parse(fs.readFileSync(localConfigFile, 'utf8'));
       if (saved.token) {
         config.token = saved.token;
-        logger.info?.('[鱼鱼API] 已从 yuyu-config.json 加载持久化 Token');
+        logger.info?.(`[鱼鱼API] 已从 ${localConfigFile} 加载持久化 Token`);
       }
     } catch {}
   }
@@ -62,7 +80,7 @@ export function apply(ctx: Context, config: PluginConfig) {
     try {
       latestSnapshot = await client.getBalanceSnapshot(config.alertThreshold);
       if (latestSnapshot.success) {
-        logger.info?.(`[鱼鱼API] 余额刷新成功: ¥${latestSnapshot.balance.toFixed(2)} (今日花费: ¥${latestSnapshot.todayCost.toFixed(4)})`);
+        logger.info?.(`[鱼鱼API] 余额刷新成功: $${latestSnapshot.balance.toFixed(2)} (今日实扣: $${latestSnapshot.todayCost.toFixed(4)})`);
       } else {
         logger.warn?.(`[鱼鱼API] 余额刷新告警: ${latestSnapshot.error}`);
       }
@@ -96,9 +114,12 @@ export function apply(ctx: Context, config: PluginConfig) {
       try {
         fs.writeFileSync(localConfigFile, JSON.stringify({
           token: res.token,
+          refreshInterval: config.refreshInterval || '3m',
+          alertThreshold: config.alertThreshold || 2.0,
+          baseUrl: config.baseUrl || 'https://sub.anzhiyu.com',
           lastSyncedAt: new Date().toISOString(),
-          email: res.email,
-          balance: res.balance
+          cachedEmail: res.email,
+          cachedBalance: res.balance
         }, null, 2), 'utf8');
       } catch {}
 
@@ -115,7 +136,7 @@ export function apply(ctx: Context, config: PluginConfig) {
       });
   }
 
-  // 4. 注册 DSH Web 状态栏组件
+  // 4. 注册 DSH Web 状态栏组件与 API 路由
   if ((ctx as any).web) {
     const web = (ctx as any).web;
     web.addStatusBarItem?.({
@@ -129,10 +150,17 @@ export function apply(ctx: Context, config: PluginConfig) {
       }
     });
 
-    // 注册 Web API 路由供前端按钮点击调用
+    web.get?.('/api/yuyu/snapshot', async (_req: any, res: any) => {
+      if (!latestSnapshot) await refreshData();
+      res.json(latestSnapshot);
+    });
+
     web.post?.('/api/yuyu/sync', async (_req: any, res: any) => {
       const result = await syncCredentials(true);
-      res.json(result);
+      res.json({
+        ...result,
+        snapshot: latestSnapshot
+      });
     });
   }
 
