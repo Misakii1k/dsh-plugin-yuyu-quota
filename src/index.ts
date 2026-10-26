@@ -65,7 +65,7 @@ export function defaultPreferences(): PluginPreferences {
     notifyOnlyWhenUnfocused: false,
     reportOnComplete: true,
     updateCheck: true,
-    updateFeedUrl: '',
+    updateFeedUrl: 'https://dsh-plugin-yuyu-quota-update.pages.dev',
     githubRepo: 'Misakii1k/dsh-plugin-yuyu-quota',
     updateCheckIntervalHours: 6
   };
