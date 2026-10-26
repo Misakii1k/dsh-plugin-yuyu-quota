@@ -8,10 +8,23 @@ import { YuyuApiClient } from './api.js';
 import { createYuyuBalanceTool } from './tool.js';
 import { renderWidgetHtml, ICONS } from './widget.js';
 import { scanRunningBrowsersForToken, launchAndCaptureToken } from './browser-sync.js';
-import { PluginConfig, BalanceSnapshot, RefreshInterval } from './types.js';
+import { PluginConfig, BalanceSnapshot, RefreshInterval, PluginPreferences, TurnUsageReport, UpdateInfo, WidgetPosition } from './types.js';
+import { createSessionTracker } from './session-tracker.js';
+import { sendDesktopNotification, playSystemAlertSound, NotifySound } from './notify.js';
+import { checkForUpdate, downloadUpdate, getPluginVersion } from './update.js';
 
 export const name = 'dsh-plugin-yuyu-quota';
-export const inject = ['webServer'];
+/**
+ * Cordis 的服务必须先在 inject 中声明，才能以属性形式访问（ctx.webServer /
+ * ctx.tools）。未声明的属性访问会抛 `cannot get property "x" without inject`。
+ * 这里对齐官方 bundle 插件（dsh-experimental-inspector、dsh-whale-widget）的写法，
+ * 声明两个可选依赖；apply() 内部对每个服务仍做能力探测与 try/catch，
+ * 单个能力缺失不会拖垮余额主链路。
+ *
+ * 注意：曾尝试写成 inject: [] 以求“绝不挂起”，结果反而使 webServer 与 tools
+ * 双双不可解析（同源路由 404 + Agent 工具不出现），因此必须在此声明。
+ */
+export const inject: string[] = ['webServer', 'tools'];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +38,10 @@ export interface SavedAccount {
   balance: number;
   lastSyncedAt: string;
   snapshot?: BalanceSnapshot;
+  /** 最近一次观察到“余额发生变化”的时刻（ISO） */
+  balanceChangedAt?: string;
+  /** 上一次观察到的 total_recharged，用于识别充值到账 */
+  lastTotalRecharged?: number;
 }
 
 export interface MultiAccountStore {
@@ -34,6 +51,81 @@ export interface MultiAccountStore {
   alertThreshold: number;
   baseUrl: string;
   accounts: SavedAccount[];
+  /** 通知 / 汇报 / 更新 / 浮窗等用户偏好 */
+  preferences: PluginPreferences;
+}
+
+/** 用户偏好的出厂默认值 */
+export function defaultPreferences(): PluginPreferences {
+  return {
+    notifyOnComplete: true,
+    notifySound: 'Notification.Reminder',
+    notifySubagentMute: true,
+    notifyOnFailure: true,
+    notifyOnlyWhenUnfocused: false,
+    reportOnComplete: true,
+    updateCheck: true,
+    updateFeedUrl: '',
+    githubRepo: 'Misakii1k/dsh-plugin-yuyu-quota',
+    updateCheckIntervalHours: 6
+  };
+}
+
+const SOUND_PRESETS = new Set([
+  'Notification.Reminder',
+  'Notification.Default',
+  'Notification.IM',
+  'Notification.Mail',
+  'Notification.SMS',
+  'none'
+]);
+
+/**
+ * 把任意外部输入收敛成合法偏好。
+ * 只接受已知键，避免通过 HTTP 把任意字段写进配置文件。
+ */
+export function sanitizePreferences(input: any, base: PluginPreferences): PluginPreferences {
+  const next: PluginPreferences = { ...base };
+  if (!input || typeof input !== 'object') return next;
+
+  const bools: Array<keyof PluginPreferences> = [
+    'notifyOnComplete',
+    'notifySubagentMute',
+    'notifyOnFailure',
+    'notifyOnlyWhenUnfocused',
+    'reportOnComplete',
+    'updateCheck'
+  ];
+  for (const key of bools) {
+    if (typeof input[key] === 'boolean') {
+      (next as any)[key] = input[key];
+    }
+  }
+
+  if (typeof input.notifySound === 'string') {
+    const sound = input.notifySound.trim();
+    if (SOUND_PRESETS.has(sound)) next.notifySound = sound;
+  }
+
+  if (typeof input.updateFeedUrl === 'string') {
+    const raw = input.updateFeedUrl.trim();
+    if (!raw) next.updateFeedUrl = '';
+    else if (/^https?:\/\/[^\s]+$/i.test(raw)) next.updateFeedUrl = raw.replace(/\/+$/, '');
+  }
+
+  if (typeof input.githubRepo === 'string') {
+    const repo = input.githubRepo.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '');
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) next.githubRepo = repo;
+  }
+
+  if (input.updateCheckIntervalHours !== undefined) {
+    const hours = Number(input.updateCheckIntervalHours);
+    if (Number.isFinite(hours) && hours >= 0.5 && hours <= 168) {
+      next.updateCheckIntervalHours = hours;
+    }
+  }
+
+  return next;
 }
 
 /**
@@ -68,7 +160,8 @@ export function loadAccountStore(): MultiAccountStore {
     refreshInterval: '30s',
     alertThreshold: 2.0,
     baseUrl: 'https://sub.anzhiyu.com',
-    accounts: []
+    accounts: [],
+    preferences: defaultPreferences()
   };
 
   const files = [getGlobalStoreFile(), getLocalConfigFile(), path.join(process.cwd(), 'yuyu-config.json')];
@@ -81,6 +174,10 @@ export function loadAccountStore(): MultiAccountStore {
 
       if (typeof raw.lastBrowserIat === 'number' && raw.lastBrowserIat > store.lastBrowserIat) {
         store.lastBrowserIat = raw.lastBrowserIat;
+      }
+
+      if (raw.preferences && typeof raw.preferences === 'object') {
+        store.preferences = sanitizePreferences(raw.preferences, store.preferences);
       }
 
       if (Array.isArray(raw.accounts)) {
@@ -120,11 +217,14 @@ export function saveAccountStore(store: MultiAccountStore) {
     alertThreshold: store.alertThreshold,
     baseUrl: store.baseUrl,
     lastSyncedAt: new Date().toISOString(),
+    preferences: store.preferences,
     accounts: store.accounts.map(a => ({
       email: a.email,
       token: a.token,
       balance: a.balance,
       lastSyncedAt: a.lastSyncedAt,
+      ...(a.balanceChangedAt ? { balanceChangedAt: a.balanceChangedAt } : {}),
+      ...(a.lastTotalRecharged !== undefined ? { lastTotalRecharged: a.lastTotalRecharged } : {}),
       ...(a.snapshot ? { snapshot: a.snapshot } : {})
     }))
   };
@@ -137,8 +237,24 @@ export function saveAccountStore(store: MultiAccountStore) {
   }
 }
 
-function sendJson(response: http.ServerResponse, status: number, payload: unknown) {
-  response.writeHead(status, {
+/**
+ * 收敛前端上报的浮窗位置。
+ * 只接受有限数值与三种吸附状态，避免脏数据把浮窗推到屏幕外。
+ */
+export function normalizeWidgetPosition(input: any): WidgetPosition | null {
+  if (!input || typeof input !== 'object') return null;
+  const x = Number(input.x);
+  const y = Number(input.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const edge = input.edge === 'left' || input.edge === 'right' ? input.edge : 'free';
+  return {
+    x: Math.max(-2000, Math.min(20000, Math.round(x))),
+    y: Math.max(-2000, Math.min(20000, Math.round(y))),
+    edge
+  };
+}
+
+function sendJson(response: http.ServerResponse, status: number, payload: unknown) {  response.writeHead(status, {
     'cache-control': 'no-store',
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
@@ -172,6 +288,8 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   if (initialConfig?.alertThreshold !== undefined) store.alertThreshold = initialConfig.alertThreshold;
   if (initialConfig?.baseUrl) store.baseUrl = initialConfig.baseUrl;
   if (initialConfig?.refreshInterval) store.refreshInterval = initialConfig.refreshInterval;
+  // 插件配置（cordis.patch.yml）里的偏好优先级高于本地文件，但仍只走白名单收敛
+  store.preferences = sanitizePreferences(initialConfig as any, store.preferences);
 
   const getActiveAccount = (): SavedAccount | undefined => {
     return store.accounts.find(a => a.email === store.activeEmail) || store.accounts[0];
@@ -179,16 +297,38 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
   const client = new YuyuApiClient(getActiveAccount()?.token || '', store.baseUrl);
 
+  /** 最近一次快照（供会话跟踪器取轮次基线，避免每次轮次都打网络） */
+  let cachedSnapshot: BalanceSnapshot | null = getActiveAccount()?.snapshot || null;
+  /** 最近一轮汇报 + 单调递增 seq（前端据此判断“有新的一轮”） */
+  let lastReport: TurnUsageReport | null = null;
+  let lastReportSeq = 0;
+  const reportHistory: TurnUsageReport[] = [];
+  /** 最近一次更新检查结果 */
+  let lastUpdateInfo: UpdateInfo | null = null;
+  let updateInFlight: Promise<UpdateInfo> | null = null;
+
   const upsertAccount = (token: string, snap: BalanceSnapshot, setActive = true) => {
     if (!snap.email) return;
     const now = new Date().toISOString();
     const existingIdx = store.accounts.findIndex(a => a.email === snap.email);
+    const previous = existingIdx >= 0 ? store.accounts[existingIdx] : undefined;
+
+    // 余额 / 累计充值发生变化时，记录变化时刻，便于确认“充值是否已到账”
+    const balanceChanged = previous !== undefined
+      && Math.abs(Number(previous.balance || 0) - snap.balance) > 1e-9;
+    const rechargeChanged = previous?.lastTotalRecharged !== undefined
+      && Math.abs(Number(previous.lastTotalRecharged) - snap.totalRecharged) > 1e-9;
+
     const entry: SavedAccount = {
       email: snap.email,
       token,
       balance: snap.balance,
       lastSyncedAt: now,
-      snapshot: snap
+      snapshot: snap,
+      balanceChangedAt: (balanceChanged || rechargeChanged)
+        ? now
+        : (previous?.balanceChangedAt || now),
+      lastTotalRecharged: snap.totalRecharged
     };
     if (existingIdx >= 0) {
       store.accounts[existingIdx] = entry;
@@ -228,13 +368,24 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
           const otherClient = new YuyuApiClient(other.token, store.baseUrl);
           const otherSnap = await otherClient.getBalanceSnapshot(store.alertThreshold);
           if (otherSnap.success) {
+            const balanceChanged = Math.abs(Number(other.balance || 0) - otherSnap.balance) > 1e-9;
+            const rechargeChanged = other.lastTotalRecharged !== undefined
+              && Math.abs(Number(other.lastTotalRecharged) - otherSnap.totalRecharged) > 1e-9;
+            const now = new Date().toISOString();
+            if (balanceChanged || rechargeChanged) {
+              other.balanceChangedAt = now;
+            } else if (!other.balanceChangedAt) {
+              other.balanceChangedAt = now;
+            }
             other.balance = otherSnap.balance;
-            other.lastSyncedAt = new Date().toISOString();
+            other.lastTotalRecharged = otherSnap.totalRecharged;
+            other.lastSyncedAt = now;
             other.snapshot = otherSnap;
           }
         })
     );
     saveAccountStore(store);
+    if (snap.success) cachedSnapshot = snap;
     return snap.success ? snap : (acc.snapshot || snap);
   };
 
@@ -337,11 +488,102 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         email: a.email,
         balance: a.balance,
         lastSyncedAt: a.lastSyncedAt,
+        balanceChangedAt: a.balanceChangedAt || null,
         active: a.email === store.activeEmail,
         snapshot: a.snapshot || null
       })),
+      preferences: store.preferences,
+      lastTurn: lastReport,
+      lastTurnSeq: lastReportSeq,
+      update: lastUpdateInfo,
+      version: getPluginVersion(),
       ...extra
     };
+  };
+
+  /** 记录一轮汇报；seq 单调递增，前端据此判断是否为新轮次。 */
+  const recordTurnReport = (report: TurnUsageReport) => {
+    lastReport = report;
+    lastReportSeq += 1;
+    reportHistory.unshift(report);
+    if (reportHistory.length > 50) reportHistory.length = 50;
+  };
+
+  /** 按用户偏好决定是否发通知，并组装文案。 */
+  const notifyTurnReport = async (report: TurnUsageReport) => {
+    const prefs = store.preferences;
+    if (!prefs.notifyOnComplete) return;
+    if (report.isSubagent && prefs.notifySubagentMute) return;
+    if (report.reason !== 'completed' && !prefs.notifyOnFailure) return;
+
+    const tokens = report.tokens.totalTokens;
+    const quotaText = report.quotaSource === 'unavailable'
+      ? '额度待下次刷新同步'
+      : `${report.quotaSource === 'estimated' ? '约 ' : ''}$${report.quota.toFixed(4)}`;
+
+    const titlePrefix = report.reason === 'completed'
+      ? '任务完成'
+      : (report.reason === 'error' ? '任务失败' : '任务中断');
+
+    const lines = [
+      `本轮 ${tokens.toLocaleString('en-US')} Tokens · 实扣 ${quotaText}`,
+      `会话累计 ${report.sessionTokens.toLocaleString('en-US')} Tokens · $${report.sessionQuota.toFixed(4)}`
+    ];
+    if (typeof report.balanceAfter === 'number') {
+      lines.push(`当前余额 $${report.balanceAfter.toFixed(2)}`);
+    }
+
+    await sendDesktopNotification({
+      title: `${titlePrefix} · ${report.sessionTitle}`.slice(0, 110),
+      body: lines.join('\n'),
+      sound: prefs.notifySound === 'none' ? false : (prefs.notifySound as NotifySound),
+      launch: 'dsh://open'
+    });
+  };
+
+  /** 会话跟踪器：把一轮结束转成“记录 + 通知”。 */
+  const sessionTracker = createSessionTracker({
+    getCachedSnapshot: () => cachedSnapshot,
+    refreshSnapshot: async () => {
+      const snap = await refreshAccount().catch(() => null);
+      return snap && snap.success ? snap : null;
+    },
+    onReport: async (report) => {
+      recordTurnReport(report);
+      await notifyTurnReport(report).catch(() => {});
+    },
+    logger
+  });
+
+  /** 检查更新（带并发合并，避免前端连点打出一串请求）。 */
+  const runUpdateCheck = async (force = false): Promise<UpdateInfo> => {
+    if (!force && lastUpdateInfo && Date.now() - lastUpdateInfo.checkedAt < 60_000) {
+      return lastUpdateInfo;
+    }
+    if (updateInFlight) return updateInFlight;
+    updateInFlight = checkForUpdate({
+      preferences: store.preferences,
+      currentVersion: getPluginVersion()
+    })
+      .then((info) => {
+        lastUpdateInfo = info;
+        return info;
+      })
+      .catch((err: any) => {
+        const info: UpdateInfo = {
+          available: false,
+          currentVersion: getPluginVersion(),
+          checkedAt: Date.now(),
+          source: 'none',
+          error: err?.message || String(err)
+        };
+        lastUpdateInfo = info;
+        return info;
+      })
+      .finally(() => {
+        updateInFlight = null;
+      });
+    return updateInFlight;
   };
 
   const handleHttpRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -437,6 +679,99 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         return;
       }
 
+      if (req.method === 'GET' && route === '/last-turn') {
+        sendJson(res, 200, {
+          ok: true,
+          seq: lastReportSeq,
+          lastTurn: lastReport,
+          history: reportHistory.slice(0, 20)
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && route === '/settings') {
+        sendJson(res, 200, {
+          ok: true,
+          preferences: store.preferences,
+          version: getPluginVersion()
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && route === '/settings') {
+        const body = await readJsonBody(req);
+        const previous = store.preferences;
+        const next = sanitizePreferences(body?.preferences ?? body, previous);
+        if (body?.widgetPosition !== undefined) {
+          next.widgetPosition = normalizeWidgetPosition(body.widgetPosition);
+        }
+        store.preferences = next;
+        saveAccountStore(store);
+        sendJson(res, 200, {
+          ok: true,
+          preferences: store.preferences,
+          message: '设置已保存'
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && route === '/notify/test') {
+        const body = await readJsonBody(req);
+        const sound = store.preferences.notifySound;
+        const result = await sendDesktopNotification({
+          title: '任务完成 · 鱼鱼配额插件测试通知',
+          body: [
+            '本轮 12,345 Tokens · 实扣 $0.0123',
+            '会话累计 45,678 Tokens · $0.0456',
+            '这是一条测试通知，用来确认声音与弹窗是否正常'
+          ].join('\n'),
+          sound: body?.silent === true ? false : (sound === 'none' ? false : (sound as NotifySound)),
+          launch: 'dsh://open'
+        });
+        sendJson(res, 200, {
+          ok: result.ok,
+          detail: result.detail,
+          message: result.ok ? '测试通知已发送' : '通知发送失败（已尝试用系统提示音兜底）'
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && route === '/sound/test') {
+        const played = await playSystemAlertSound();
+        sendJson(res, 200, { ok: played, message: played ? '已播放系统提示音' : '播放失败' });
+        return;
+      }
+
+      if (req.method === 'GET' && route === '/update') {
+        const force = url.searchParams.get('force') === '1';
+        const info = await runUpdateCheck(force);
+        sendJson(res, 200, { ok: true, update: info, version: getPluginVersion() });
+        return;
+      }
+
+      if (req.method === 'POST' && route === '/update/download') {
+        const info = await runUpdateCheck(false);
+        if (!info.available || !info.downloadUrl) {
+          sendJson(res, 400, { ok: false, message: '当前没有可下载的新版本' });
+          return;
+        }
+        const result = await downloadUpdate(info);
+        sendJson(res, 200, {
+          ok: result.ok,
+          file: result.file,
+          bytes: result.bytes,
+          sha256: result.sha256,
+          error: result.error,
+          message: result.ok
+            ? `已下载并校验通过：${result.file}`
+            : (result.error || '下载失败'),
+          installHint: result.file
+            ? '在 DSH 中执行：dsh plugin --profile desktop add "' + result.file + '"，然后 Ctrl+R 生效'
+            : undefined
+        });
+        return;
+      }
+
       if (req.method === 'GET' && route === '/tutorial') {
         const tutorialCandidates = [
           path.resolve(__dirname, '../tutorial.html'),
@@ -499,7 +834,14 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     refreshAccount,
     syncFromBrowser,
     handleHttpRequest,
-    getActiveAccount
+    getActiveAccount,
+    sessionTracker,
+    runUpdateCheck,
+    recordTurnReport,
+    notifyTurnReport,
+    getLastReport: () => lastReport,
+    getLastReportSeq: () => lastReportSeq,
+    getUpdateInfo: () => lastUpdateInfo
   };
 }
 
@@ -520,48 +862,214 @@ export function startLocalBridgeServer(service: ReturnType<typeof createYuyuServ
   });
 }
 
+/**
+ * 在 ctx 上解析一个可选服务。
+ *
+ * Cordis 的服务解析路径是 `ctx.reflect.get(name, strict=false)` 或属性代理
+ * `ctx[name]`；但属性代理在服务“未被提供”时会抛
+ * `cannot get property "x" without inject`，因此每一次探测都必须包裹 try/catch，
+ * 否则一个缺失的可选服务会连带打断整个 apply()。
+ *
+ * `ctx.get` 不是公开 API（只存在于内部 ReflectService 上），仅作兼容探测。
+ */
+function resolveService(ctx: any, serviceName: string): any {
+  const probes: Array<() => any> = [
+    // 本版本推荐：非严格解析，服务未提供时返回 undefined 而不是抛错
+    () => ctx?.reflect?.get?.(serviceName, false),
+    // 属性代理（服务存在时等价于 ctx.serviceName）
+    () => ctx?.[serviceName],
+    () => ctx?.get?.(serviceName, false),
+    () => ctx?.root?.[serviceName],
+  ];
+  for (const probe of probes) {
+    try {
+      const value = probe();
+      if (value && (typeof value === 'object' || typeof value === 'function')) return value;
+    } catch {
+      // 该探测路径不可用或服务未提供，继续尝试下一种
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 把工具注册到当前 DSH 版本真实的工具服务上。
+ * 本版本的工具服务是 @deepseek-ai/dsh-tools 的 ToolRuntime（ctx.tools），
+ * 注册方法为 register(definition)，返回 disposer。旧版 ctx.agent.registerTool
+ * 作为回退保留。
+ */
+function registerBalanceTool(ctx: any, tool: any, logger: any): string {
+  // 1) 本版本：tools 服务，register({ name, description, parameters, output, execute })
+  const tools = resolveService(ctx, 'tools');
+  if (tools && typeof tools.register === 'function') {
+    const definition = {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters?.properties ? tool.parameters.properties : tool.parameters,
+      output: {
+        schema: { type: 'array', items: { type: 'json' } },
+        render: (_args: any, value: any) => value
+      },
+      execute: async (args: any) => [{ type: 'text', text: await tool.execute(args) }]
+    };
+    try {
+      const disposer = tools.register(definition);
+      if (typeof disposer === 'function' && typeof ctx.effect === 'function') {
+        ctx.effect(() => disposer, 'dsh-plugin-yuyu-quota: tool');
+      }
+      return 'tools.register';
+    } catch (err: any) {
+      logger?.warn?.(`[鱼鱼API] tools.register 失败: ${err?.message || err}`);
+    }
+  }
+
+  // 2) 旧版：agent.registerTool（属性代理在服务缺失时会抛错，必须包裹）
+  try {
+    const agent = ctx?.agent;
+    if (agent && typeof agent.registerTool === 'function') {
+      agent.registerTool(tool);
+      return 'agent.registerTool';
+    }
+  } catch {
+    // 无 agent 服务，继续
+  }
+
+  // 3) 旧版：ctx.tool(...)
+  try {
+    if (typeof ctx?.tool === 'function') {
+      ctx.tool(tool);
+      return 'ctx.tool';
+    }
+  } catch {
+    // 无 tool 方法，继续
+  }
+
+  logger?.warn?.('[鱼鱼API] 未找到可用的工具注册接口，Agent 工具不可用（余额主链路不受影响）');
+  return 'none';
+}
+
 export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
   const logger = typeof ctx.logger === 'function' ? ctx.logger('yuyu-quota') : (ctx.logger || console);
   const service = createYuyuService(config, logger);
   let timer: NodeJS.Timeout | null = null;
   let bridgeServer: http.Server | null = null;
+  const notes: string[] = [];
 
-  // 1. 注册 Agent Tool
-  const balanceTool = createYuyuBalanceTool(service.client, service.store.alertThreshold);
-  if (ctx.agent?.registerTool) {
-    ctx.agent.registerTool(balanceTool);
-  } else if (typeof ctx.tool === 'function') {
-    ctx.tool(balanceTool);
+  // 1. 先启动本地 CORS 桥接服务 —— 这是前端的主通道，必须最先起作用
+  startLocalBridgeServer(service)
+    .then((srv) => {
+      bridgeServer = srv;
+      if (!srv) logger?.warn?.('[鱼鱼API] 端口 53788 被占用，bridge 未启动（将回退 DSH 同源路由）');
+    })
+    .catch(() => {});
+
+  // 2. 注册 DSH 官方 webServer 路由（存在才注册，缺失不阻断）
+  const webServer = resolveService(ctx, 'webServer');
+  if (webServer && typeof webServer.register === 'function') {
+    try {
+      const disposer = webServer.register({
+        kind: 'prefix',
+        path: API_PREFIX,
+        handler: (req: http.IncomingMessage, res: http.ServerResponse) => service.handleHttpRequest(req, res)
+      });
+      if (typeof disposer === 'function' && typeof ctx.effect === 'function') {
+        ctx.effect(() => disposer, 'dsh-plugin-yuyu-quota: api');
+      }
+      notes.push('webServer=ok');
+    } catch (err: any) {
+      notes.push('webServer=fail');
+      logger?.warn?.(`[鱼鱼API] webServer 路由注册失败: ${err?.message || err}`);
+    }
+  } else {
+    notes.push('webServer=absent');
   }
 
-  // 2. 注册 DSH 官方 webServer 路由
-  if (ctx.webServer?.register) {
-    ctx.effect(() => ctx.webServer.register({
-      kind: 'prefix',
-      path: API_PREFIX,
-      handler: (req: http.IncomingMessage, res: http.ServerResponse) => service.handleHttpRequest(req, res)
-    }), 'dsh-plugin-yuyu-quota: api');
+  // 3. 注册 Agent Tool（失败仅告警）
+  let toolReg = 'none';
+  try {
+    toolReg = registerBalanceTool(
+      ctx,
+      createYuyuBalanceTool(service.client, service.store.alertThreshold),
+      logger
+    );
+  } catch (err: any) {
+    logger?.warn?.(`[鱼鱼API] 工具注册异常: ${err?.message || err}`);
   }
+  notes.push(`tool=${toolReg}`);
 
-  // 3. 启动本地 CORS 桥接服务 (127.0.0.1:53788)
-  startLocalBridgeServer(service).then((srv) => {
-    bridgeServer = srv;
-  });
+  // 4. 立即用已保存账号刷新一次（不走浏览器扫描，保证启动就拿到真实余额）
+  service
+    .refreshAccount()
+    .then((snap) => {
+      if (snap?.success) {
+        logger?.info?.(`[鱼鱼API] 启动刷新成功: ${snap.email} ($${snap.balance.toFixed(2)})`);
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      logger?.info?.(`[鱼鱼API] 后端已启动 bridge=53788 ${notes.join(' ')}`);
+    });
 
-  // 4. 启动时自动从本地浏览器存储同步并刷新所有账号
-  service.syncFromBrowser(false, undefined, true).catch(() => {});
+  // 5. 启动后异步补充浏览器扫描（可能发现新账号 / 切换账号）
+  setTimeout(() => {
+    service.syncFromBrowser(false, undefined, false).catch(() => {});
+  }, 1500);
 
+  // 6. 定时刷新
   const intervalMs = INTERVAL_MAP[service.store.refreshInterval] || 3 * 60 * 1000;
   timer = setInterval(() => {
     service.refreshAccount().catch(() => {});
   }, intervalMs);
 
-  // 5. 卸载清理
+  // 7. 订阅会话事件：每轮结束汇报 Token / 额度，并按偏好弹 Windows 原生通知
+  const sessionDisposers: Array<() => void> = [];
+  try {
+    const onEvent = (session: any, event: any) => {
+      try {
+        service.sessionTracker.observe(session, event);
+      } catch (err: any) {
+        logger?.warn?.(`[鱼鱼API] 会话事件处理失败: ${err?.message || err}`);
+      }
+    };
+    const onDisposed = (session: any) => {
+      try {
+        service.sessionTracker.forget(session);
+      } catch {}
+    };
+    if (typeof ctx.on === 'function') {
+      const d1 = ctx.on('session/event', onEvent);
+      if (typeof d1 === 'function') sessionDisposers.push(d1);
+      const d2 = ctx.on('session/disposed', onDisposed);
+      if (typeof d2 === 'function') sessionDisposers.push(d2);
+      notes.push('sessionWatch=ok');
+    } else {
+      notes.push('sessionWatch=absent');
+    }
+  } catch (err: any) {
+    notes.push('sessionWatch=fail');
+    logger?.warn?.(`[鱼鱼API] 会话事件订阅失败: ${err?.message || err}`);
+  }
+
+  // 8. 启动后按偏好检查一次更新
+  if (service.store.preferences.updateCheck) {
+    setTimeout(() => {
+      service.runUpdateCheck(true).catch(() => {});
+    }, 8000);
+  }
+
+  // 9. 卸载清理
   if (typeof ctx.effect === 'function') {
     ctx.effect(() => () => {
       if (timer) clearInterval(timer);
+      timer = null;
+      for (const dispose of sessionDisposers) {
+        try { dispose(); } catch {}
+      }
+      sessionDisposers.length = 0;
+      try { service.sessionTracker.dispose(); } catch {}
       if (bridgeServer) {
         try { bridgeServer.close(); } catch {}
+        bridgeServer = null;
       }
     }, 'dsh-plugin-yuyu-quota: dispose');
   }
@@ -572,3 +1080,6 @@ export * from './api.js';
 export * from './tool.js';
 export * from './widget.js';
 export * from './browser-sync.js';
+export * from './session-tracker.js';
+export * from './notify.js';
+export * from './update.js';

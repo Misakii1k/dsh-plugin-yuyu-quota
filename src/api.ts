@@ -31,12 +31,15 @@ export class YuyuApiClient {
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${this.token}`,
       'Accept': 'application/json',
-      'User-Agent': 'DSH-Plugin-Yuyu-Quota/1.0.3',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'User-Agent': 'DSH-Plugin-Yuyu-Quota/1.0.10',
       ...(options.headers as Record<string, string> || {})
     };
 
     const res = await fetch(url, {
       ...options,
+      cache: 'no-store',
       headers
     });
 
@@ -89,6 +92,8 @@ export class YuyuApiClient {
         this.getKeys()
       ]);
 
+      const fetchedAt = Date.now();
+
       if (profile.status === 'rejected') {
         throw profile.reason;
       }
@@ -99,6 +104,10 @@ export class YuyuApiClient {
 
       const balance = Number(p.balance || 0);
       const isLowBalance = balance <= alertThreshold;
+      const totalRecharged = Number(p.total_recharged || 0);
+      // 注意：服务端 updated_at / last_active_at 会在每次 profile 请求时被刷新，
+      // 无法用于判断“余额字段是否新鲜”，因此不据此推断 stale。
+      const serverUpdatedAt = p.updated_at;
       const todayActualCost = Number(s?.today_actual_cost ?? s?.today_cost ?? 0);
       const todayRawCost = Number(s?.today_cost || 0);
       const todayTokens = Number(s?.today_tokens || 0);
@@ -122,7 +131,7 @@ export class YuyuApiClient {
         `- 账号邮箱: ${p.email}`,
         `- 当前可用余额: $${balance.toFixed(2)}${balanceWarning}`,
         `- 冻结金额: $${Number(p.frozen_balance || 0).toFixed(2)}`,
-        `- 累计充值: $${Number(p.total_recharged || 0).toFixed(2)}`,
+        `- 累计充值: $${totalRecharged.toFixed(2)}`,
         `- 今日实扣消耗: $${todayActualCost.toFixed(4)} (原价 $${todayRawCost.toFixed(4)}，共消耗 ${todayTokens.toLocaleString()} Tokens，请求 ${todayRequests} 次)`,
         `- 近30天累计: 请求 ${totalRequests.toLocaleString()} 次，实扣 $${totalActualCost.toFixed(4)}`,
       ];
@@ -134,11 +143,13 @@ export class YuyuApiClient {
 
       return {
         success: true,
-        timestamp: Date.now(),
+        timestamp: fetchedAt,
+        fetchedAt,
+        serverUpdatedAt,
         email: p.email,
         balance,
         frozenBalance: Number(p.frozen_balance || 0),
-        totalRecharged: Number(p.total_recharged || 0),
+        totalRecharged,
         todayCost: todayActualCost,
         todayRawCost,
         todayTokens,

@@ -5,3 +5,15 @@ node_modules/
 .idea/
 .vscode/
 .oil-ui/
+
+# 含真实登录 Token / 余额数据的本地配置，禁止提交
+yuyu-config.json
+pnpm-lock.yaml
+
+# 构建/测试产物
+.tmp-cf-functions/
+public/version.json
+.wrangler/
+
+# 发版备份目录（本地回滚用）
+.backup-yuyu-*/

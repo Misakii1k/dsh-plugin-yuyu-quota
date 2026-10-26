@@ -1,0 +1,383 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { PluginPreferences, UpdateInfo } from './types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const FETCH_TIMEOUT_MS = 8000;
+const FAST_FEED_TIMEOUT_MS = 1500;
+const DOWNLOAD_TIMEOUT_MS = 120_000;
+const DEFAULT_GITHUB_REPO = 'Misakii1k/dsh-plugin-yuyu-quota';
+
+export interface UpdateCheckOptions {
+  preferences: Pick<PluginPreferences, 'updateFeedUrl' | 'githubRepo'>;
+  currentVersion?: string;
+}
+
+interface ParsedVersion {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string;
+}
+
+function parseVersion(value: unknown): ParsedVersion | null {
+  if (typeof value !== 'string') return null;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value.trim());
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] || ''
+  };
+}
+
+export function cleanVersion(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const match = /v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(value.trim());
+  return match ? match[1] : '';
+}
+
+export function compareVersions(left: string, right: string): number {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) return 0;
+  if (a.major !== b.major) return a.major > b.major ? 1 : -1;
+  if (a.minor !== b.minor) return a.minor > b.minor ? 1 : -1;
+  if (a.patch !== b.patch) return a.patch > b.patch ? 1 : -1;
+  if (a.prerelease === b.prerelease) return 0;
+  // 有预发布标记的版本低于同号正式版
+  if (!a.prerelease) return 1;
+  if (!b.prerelease) return -1;
+  return a.prerelease > b.prerelease ? 1 : -1;
+}
+
+export function getPluginVersion(): string {
+  const candidates = [
+    path.resolve(__dirname, '../package.json'),
+    path.resolve(__dirname, './package.json'),
+    path.join(process.cwd(), 'package.json')
+  ];
+  for (const file of candidates) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const version = cleanVersion(pkg?.version);
+      if (version) return version;
+    } catch {
+      // 尝试下一个候选路径
+    }
+  }
+  return '0.0.0';
+}
+
+function normalizeRepo(repo: string): string {
+  const cleaned = String(repo || '')
+    .trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '');
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(cleaned) ? cleaned : '';
+}
+
+/** 去掉末尾斜杠；不是 http(s) 时返回空串 */
+export function normalizeFeedUrl(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+async function fetchJson(url: string, currentVersion: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<any> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      cache: 'no-store',
+      headers: {
+        'Accept': 'application/vnd.github+json, application/json',
+        'User-Agent': `DSH-Plugin-Yuyu-Quota/${currentVersion}`
+      }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const SHA256_RE = /^[a-f0-9]{64}$/i;
+
+function pickReleaseAsset(assets: any): string {
+  if (!Array.isArray(assets)) return '';
+  const preferred = assets.find((asset) => /\.tgz$/i.test(String(asset?.name || '')))
+    || assets.find((asset) => /\.tar\.gz$/i.test(String(asset?.name || '')))
+    || assets.find((asset) => /latest\.json$/i.test(String(asset?.name || '')));
+  return preferred && typeof preferred.browser_download_url === 'string' ? preferred.browser_download_url : '';
+}
+
+/** 从 release 资产里挑出 tgz 体积与 sha256（GitHub 的 digest 字段形如 `sha256:...`）。 */
+function tgzAssetFacts(assets: any): { size?: number; sha256?: string } {
+  if (!Array.isArray(assets)) return {};
+  const asset = assets.find((item) => /\.tgz$/i.test(String(item?.name || '')))
+    || assets.find((item) => /\.tar\.gz$/i.test(String(item?.name || '')));
+  if (!asset) return {};
+  const facts: { size?: number; sha256?: string } = {};
+  if (typeof asset.size === 'number' && asset.size > 0) facts.size = asset.size;
+  const digest = typeof asset.digest === 'string' ? asset.digest : '';
+  if (digest.startsWith('sha256:') && SHA256_RE.test(digest.slice(7))) {
+    facts.sha256 = digest.slice(7).toLowerCase();
+  }
+  return facts;
+}
+
+/** 把同源的 `/api/download?...` 相对地址补成绝对地址。 */
+export function resolveDownloadUrl(value: unknown, feedUrl: string): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (!feedUrl) return '';
+  try {
+    return new URL(raw, feedUrl.endsWith('/') ? feedUrl : `${feedUrl}/`).toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeRelease(data: any, currentVersion: string, repo: string, source: string, feedUrl = ''): UpdateInfo | null {
+  if (!data || typeof data !== 'object') return null;
+  if (Array.isArray(data)) return null;
+
+  const version = cleanVersion(data.version || data.latestVersion || data.tag_name || data.tag || data.name);
+  if (!version) return null;
+
+  const releaseUrl = String(
+    data.releaseUrl || data.html_url || data.htmlUrl || data.pageUrl
+      || (repo ? `https://github.com/${repo}/releases` : '')
+  );
+  const rawDownload = data.downloadUrl || data.tarball || data.tarball_url || pickReleaseAsset(data.assets) || '';
+  const downloadUrl = resolveDownloadUrl(rawDownload, feedUrl) || String(rawDownload || '');
+  const notes = String(data.notes || data.body || data.changelog || '').slice(0, 1500);
+  const publishedAt = data.publishedAt || data.published_at || data.created_at || '';
+
+  const assetFacts = tgzAssetFacts(data.assets);
+  const fileSize = typeof data.fileSize === 'number' && data.fileSize > 0
+    ? data.fileSize
+    : (typeof data.size === 'number' && data.size > 0 ? data.size : assetFacts.size);
+  const declaredSha = String(data.sha256 || '').trim().toLowerCase();
+  const sha256 = SHA256_RE.test(declaredSha) ? declaredSha : assetFacts.sha256;
+
+  return {
+    available: compareVersions(version, currentVersion) > 0,
+    currentVersion,
+    latestVersion: version,
+    releaseUrl: releaseUrl || undefined,
+    downloadUrl: downloadUrl || undefined,
+    fileSize,
+    sha256,
+    notes: notes || undefined,
+    publishedAt: typeof publishedAt === 'string' ? publishedAt : undefined,
+    checkedAt: Date.now(),
+    source
+  };
+}
+
+function pickHighest(candidates: UpdateInfo[]): UpdateInfo | null {
+  const valid = candidates.filter((item) => item && item.latestVersion);
+  if (valid.length === 0) return null;
+  return valid.reduce((best, item) =>
+    compareVersions(String(item.latestVersion), String(best.latestVersion)) > 0 ? item : best
+  );
+}
+
+/** 合并两条同版本结果，用信息更全的一方补齐体积与哈希。 */
+function mergeSameVersion(primary: UpdateInfo, secondary: UpdateInfo): UpdateInfo {
+  return {
+    ...primary,
+    downloadUrl: primary.downloadUrl || secondary.downloadUrl,
+    fileSize: primary.fileSize ?? secondary.fileSize,
+    sha256: primary.sha256 ?? secondary.sha256,
+    notes: primary.notes || secondary.notes,
+    releaseUrl: primary.releaseUrl || secondary.releaseUrl
+  };
+}
+
+/**
+ * 检查更新。
+ *
+ * 探测顺序对齐已验证的参考实现：
+ * 1. Cloudflare 边缘 `{feed}/version.json`（约 50~150ms，极速通道，1.5s 熔断）；
+ * 2. 若极速通道未给出新版本，则并发查询 GitHub Release / Tag / raw manifest；
+ * 3. 所有候选取版本号最高者，同版本时互补 sha256 与体积。
+ *
+ * 注意：本仓库当前是**私有**的，匿名直连 api.github.com 会 404。
+ * 这种情况下只有 Cloudflare 边缘通道可用（它持有 GITHUB_TOKEN 做代理）。
+ */
+export async function checkForUpdate(options: UpdateCheckOptions): Promise<UpdateInfo> {
+  const currentVersion = cleanVersion(options.currentVersion) || getPluginVersion();
+  const feedUrl = normalizeFeedUrl(options.preferences.updateFeedUrl);
+  const repo = normalizeRepo(options.preferences.githubRepo) || DEFAULT_GITHUB_REPO;
+  const errors: string[] = [];
+
+  type Candidate = { url: string; source: string; transform?: (data: any) => any; timeout?: number };
+  const sources: Candidate[] = [];
+
+  if (feedUrl) {
+    sources.push({ url: `${feedUrl}/version.json`, source: 'feed', timeout: FAST_FEED_TIMEOUT_MS });
+  }
+  sources.push({ url: `https://api.github.com/repos/${repo}/releases/latest`, source: 'github-release' });
+  sources.push({
+    url: `https://api.github.com/repos/${repo}/tags?per_page=20`,
+    source: 'github-tag',
+    transform: (tags) => {
+      if (!Array.isArray(tags)) return null;
+      const versions = tags
+        .map((tag) => cleanVersion(tag?.name))
+        .filter(Boolean)
+        .sort((a, b) => compareVersions(b, a));
+      return versions[0] ? { version: versions[0], html_url: `https://github.com/${repo}/releases` } : null;
+    }
+  });
+  sources.push({ url: `https://raw.githubusercontent.com/${repo}/main/latest.json`, source: 'github-manifest' });
+
+  const candidates: UpdateInfo[] = [];
+
+  // 极速通道先跑，命中新版本就不用等 GitHub 的 3 个请求
+  const feedCandidate = sources.find((item) => item.source === 'feed');
+  if (feedCandidate) {
+    try {
+      const raw = await fetchJson(feedCandidate.url, currentVersion, feedCandidate.timeout);
+      const normalized = normalizeRelease(raw, currentVersion, repo, 'feed', feedUrl);
+      if (normalized) {
+        candidates.push(normalized);
+        if (normalized.available) {
+          return normalized;
+        }
+      }
+    } catch (err: any) {
+      errors.push(`feed: ${err?.message || String(err)}`);
+    }
+  }
+
+  const rest = sources.filter((item) => item.source !== 'feed');
+  const results = await Promise.allSettled(
+    rest.map(async (source) => {
+      const raw = await fetchJson(source.url, currentVersion);
+      const data = source.transform ? source.transform(raw) : raw;
+      const normalized = normalizeRelease(data, currentVersion, repo, source.source, feedUrl);
+      if (!normalized) throw new Error('empty manifest');
+      return normalized;
+    })
+  );
+
+  for (let index = 0; index < results.length; index += 1) {
+    const result = results[index];
+    if (result.status === 'fulfilled') {
+      candidates.push(result.value);
+    } else {
+      errors.push(`${rest[index].source}: ${result.reason?.message || String(result.reason)}`);
+    }
+  }
+
+  const best = pickHighest(candidates);
+  if (best) {
+    const sameVersion = candidates.find((item) => item !== best && item.latestVersion === best.latestVersion);
+    const merged = sameVersion ? mergeSameVersion(best, sameVersion) : best;
+    merged.available = merged.available || candidates.some((item) => item.available);
+    return merged;
+  }
+
+  return {
+    available: false,
+    currentVersion,
+    checkedAt: Date.now(),
+    source: feedUrl ? 'feed' : 'github',
+    error: errors.length > 0 ? errors.join('; ').slice(0, 400) : undefined
+  };
+}
+
+export interface DownloadResult {
+  ok: boolean;
+  file?: string;
+  bytes?: number;
+  sha256?: string;
+  error?: string;
+}
+
+function sha256OfFile(file: string): string {
+  const hash = createHash('sha256');
+  hash.update(fs.readFileSync(file));
+  return hash.digest('hex');
+}
+
+/**
+ * 下载更新包到临时目录，并（在提供了哈希/体积时）校验完整性。
+ *
+ * 安全约束：只接受 http(s) 地址；校验失败会删除临时文件，绝不返回半成品路径。
+ */
+export async function downloadUpdate(
+  info: UpdateInfo,
+  options: { targetDir?: string } = {}
+): Promise<DownloadResult> {
+  const url = String(info.downloadUrl || '').trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return { ok: false, error: '更新地址无效' };
+  }
+
+  const version = cleanVersion(info.latestVersion) || 'latest';
+  const dir = options.targetDir || path.join(os.tmpdir(), 'dsh-yuyu-update');
+  const file = path.join(dir, `dsh-plugin-yuyu-quota-${version}.tgz`);
+
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err: any) {
+    return { ok: false, error: `无法创建下载目录: ${err?.message || err}` };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': `DSH-Plugin-Yuyu-Quota/${info.currentVersion || '0.0.0'}` }
+    });
+    if (!response.ok) {
+      return { ok: false, error: `下载失败: HTTP ${response.status}` };
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (typeof info.fileSize === 'number' && info.fileSize > 0 && buffer.length !== info.fileSize) {
+      return {
+        ok: false,
+        error: `体积校验失败：期望 ${info.fileSize} 字节，实际 ${buffer.length} 字节`
+      };
+    }
+
+    fs.writeFileSync(file, buffer);
+    const actual = sha256OfFile(file);
+
+    if (info.sha256 && SHA256_RE.test(info.sha256) && actual.toLowerCase() !== info.sha256.toLowerCase()) {
+      try { fs.unlinkSync(file); } catch {}
+      return { ok: false, error: 'sha256 校验失败，已删除下载的安装包' };
+    }
+
+    return { ok: true, file, bytes: buffer.length, sha256: actual };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export { DEFAULT_GITHUB_REPO };

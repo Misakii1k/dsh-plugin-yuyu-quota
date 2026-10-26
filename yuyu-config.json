@@ -1,9 +1,0 @@
-{
-  "activeEmail": "",
-  "token": "",
-  "cachedEmail": "",
-  "refreshInterval": "30s",
-  "alertThreshold": 2.0,
-  "baseUrl": "https://sub.anzhiyu.com",
-  "accounts": []
-}

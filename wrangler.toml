@@ -1,0 +1,15 @@
+# Cloudflare Pages 配置
+#
+# 部署方式（二选一）：
+#   1) 控制台：连到 GitHub 仓库，构建命令留空，输出目录 public/，函数目录 functions/
+#   2) 命令行：npx wrangler pages deploy public --project-name dsh-plugin-yuyu-quota-update
+#
+# 必须在 Pages 项目里配置环境变量 GITHUB_TOKEN（fine-grained，仅 Contents: Read，
+# 仅限本仓库），否则 /version.json 与 /api/* 会返回 503。
+
+name = "dsh-plugin-yuyu-quota-update"
+compatibility_date = "2026-10-01"
+pages_build_output_dir = "public"
+
+# 注意：不要把 GITHUB_TOKEN 写进这个文件（会被提交进仓库）。
+# 在 Cloudflare 控制台 Settings -> Environment variables 里配置。
