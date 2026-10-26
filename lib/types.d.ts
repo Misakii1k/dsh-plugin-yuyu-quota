@@ -65,7 +65,7 @@ export interface BalanceSnapshot {
     formattedText: string;
     error?: string;
 }
-export type RefreshInterval = '30s' | '1m' | '3m' | '5m';
+export type RefreshInterval = '1s' | '5s' | '30s' | '1m' | '5m';
 export interface PluginConfig {
     /** 鱼鱼API 网页登录 Auth Token (JWT) */
     token: string;

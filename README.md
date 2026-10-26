@@ -51,7 +51,7 @@
 
 ```bash
 # 进入 DeepSeek Harness 环境加载本地插件
-dsh plugin --profile web add "C:\Users\87850\.gemini\antigravity\scratch\dsh-plugin-yuyu-quota"
+dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.0.9.tgz"
 ```
 
 ---
@@ -75,16 +75,16 @@ dsh plugin --profile web add "C:\Users\87850\.gemini\antigravity\scratch\dsh-plu
 > **DeepSeek**（自主触发 `get_yuyu_api_balance` 工具）：
 > 
 > [正常] 鱼鱼API 账户状态  
-> - 账号邮箱: 878503820@qq.com  
-> - 当前可用余额: ¥7.02 元  
-> - 冻结金额: ¥0.00 元  
-> - 累计充值: ¥13.90 元  
-> - 今日已消耗: ¥0.0000 元 (共消耗 0 Tokens，请求 0 次)  
+> - 账号邮箱: user@example.com  
+> - 当前可用余额: $10.50  
+> - 冻结金额: $0.00  
+> - 累计充值: $20.00  
+> - 今日已消耗: $0.0000 (共消耗 0 Tokens，请求 0 次)  
 > - 关联密钥 (2个):  
->   • [123] 绑定分组: 大肥鱼 (deepseek) - 状态: 正常  
->   • [codex] 绑定分组: GPT福利随便玩玩 (openai) - 状态: 正常  
+>   • [Default] 绑定分组: 基础模型 (deepseek) - 状态: 正常  
+>   • [Coding] 绑定分组: 编程专线 (openai) - 状态: 正常  
 > 
-> *您的账户当前余额充裕（¥7.02），今日暂无额外消费，所有模型密钥均处于正常可用状态。*
+> *您的账户当前余额充裕（$10.50），今日暂无额外消费，所有模型密钥均处于正常可用状态。*
 
 ---
 

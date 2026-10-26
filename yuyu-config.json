@@ -1,71 +1,9 @@
 {
-  "activeEmail": "3231640018@qq.com",
-  "lastBrowserIat": 1792931655,
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozNjYsImVtYWlsIjoiMzIzMTY0MDAxOEBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjQ1MTQyNTM0MTY1MTE2OTQ3NDksInNpZCI6IjE0M2Q3MzAyNjhlNDRmZjg4NmQxZjdjNGNhOWFjODg4IiwiYm5kIjoiZGVlZWZiZjdlNmY5MmNlM2U2MTVhMjU1MDQ4NGVmZTgiLCJleHAiOjE3OTMwMTgwNTUsIm5iZiI6MTc5MjkzMTY1NSwiaWF0IjoxNzkyOTMxNjU1fQ.GWJV-iBhPjgZjEeN56u293RJ7GrsnJG3pBSLtGzeQ2g",
-  "cachedEmail": "3231640018@qq.com",
-  "cachedBalance": 8.80613764,
-  "refreshInterval": "3m",
-  "alertThreshold": 2,
+  "activeEmail": "",
+  "token": "",
+  "cachedEmail": "",
+  "refreshInterval": "30s",
+  "alertThreshold": 2.0,
   "baseUrl": "https://sub.anzhiyu.com",
-  "lastSyncedAt": "2026-10-25T14:52:16.360Z",
-  "accounts": [
-    {
-      "email": "878503820@qq.com",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozMzksImVtYWlsIjoiODc4NTAzODIwQHFxLmNvbSIsInJvbGUiOiJ1c2VyIiwidG9rZW5fdmVyc2lvbiI6ODI5Mzc5NTMwNzQ1NDMxMzk2LCJzaWQiOiJiNWRhZDUxYzJjZDM2N2U1MmExNzZjMDBjZGQ1YmI0OCIsImJuZCI6ImRlZWVmYmY3ZTZmOTJjZTNlNjE1YTI1NTA0ODRlZmU4IiwiZXhwIjoxNzkzMDE2ODgxLCJuYmYiOjE3OTI5MzA0ODEsImlhdCI6MTc5MjkzMDQ4MX0.h6vQ5YU7R4zjIFP1BrtoAvx5ve36oAP3MHikH-UQrBA",
-      "balance": 7.02031123,
-      "lastSyncedAt": "2026-10-25T14:52:16.360Z",
-      "snapshot": {
-        "success": true,
-        "timestamp": 1792939936360,
-        "email": "878503820@qq.com",
-        "balance": 7.02031123,
-        "frozenBalance": 0,
-        "totalRecharged": 13.9,
-        "todayCost": 0,
-        "todayRawCost": 0,
-        "todayTokens": 0,
-        "todayRequests": 0,
-        "totalRequests": 0,
-        "totalActualCost": 0,
-        "keysCount": 2,
-        "keysSummary": [
-          "• [123] 绑定分组: 大肥鱼 (deepseek) - 状态: 正常",
-          "• [codex] 绑定分组: GPT福利随便玩玩 (openai) - 状态: 正常"
-        ],
-        "isLowBalance": false,
-        "alertThreshold": 2,
-        "formattedText": "[正常] 鱼鱼API 账户状态\n- 账号邮箱: 878503820@qq.com\n- 当前可用余额: $7.02\n- 冻结金额: $0.00\n- 累计充值: $13.90\n- 今日实扣消耗: $0.0000 (原价 $0.0000，共消耗 0 Tokens，请求 0 次)\n- 近30天累计: 请求 0 次，实扣 $0.0000\n- 关联密钥 (2个):\n• [123] 绑定分组: 大肥鱼 (deepseek) - 状态: 正常\n• [codex] 绑定分组: GPT福利随便玩玩 (openai) - 状态: 正常"
-      }
-    },
-    {
-      "email": "3231640018@qq.com",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozNjYsImVtYWlsIjoiMzIzMTY0MDAxOEBxcS5jb20iLCJyb2xlIjoidXNlciIsInRva2VuX3ZlcnNpb24iOjQ1MTQyNTM0MTY1MTE2OTQ3NDksInNpZCI6IjE0M2Q3MzAyNjhlNDRmZjg4NmQxZjdjNGNhOWFjODg4IiwiYm5kIjoiZGVlZWZiZjdlNmY5MmNlM2U2MTVhMjU1MDQ4NGVmZTgiLCJleHAiOjE3OTMwMTgwNTUsIm5iZiI6MTc5MjkzMTY1NSwiaWF0IjoxNzkyOTMxNjU1fQ.GWJV-iBhPjgZjEeN56u293RJ7GrsnJG3pBSLtGzeQ2g",
-      "balance": 8.80613764,
-      "lastSyncedAt": "2026-10-25T14:52:16.055Z",
-      "snapshot": {
-        "success": true,
-        "timestamp": 1792939936055,
-        "email": "3231640018@qq.com",
-        "balance": 8.80613764,
-        "frozenBalance": 0,
-        "totalRecharged": 48,
-        "todayCost": 0.0039851904,
-        "todayRawCost": 0.06641984,
-        "todayTokens": 48838,
-        "todayRequests": 5,
-        "totalRequests": 2392,
-        "totalActualCost": 3.3545928201,
-        "keysCount": 4,
-        "keysSummary": [
-          "• [curser] 绑定分组: 月之亮面 (kimi) - 状态: 正常",
-          "• [生图专用] 绑定分组: 福利生图 gpt (openai) - 状态: 正常",
-          "• [CC] 绑定分组: Claude特价90%缓存(kiro)  (anthropic) - 状态: 正常",
-          "• [测试] 绑定分组: 大肥鱼 (deepseek) - 状态: 正常"
-        ],
-        "isLowBalance": false,
-        "alertThreshold": 2,
-        "formattedText": "[正常] 鱼鱼API 账户状态\n- 账号邮箱: 3231640018@qq.com\n- 当前可用余额: $8.81\n- 冻结金额: $0.00\n- 累计充值: $48.00\n- 今日实扣消耗: $0.0040 (原价 $0.0664，共消耗 48,838 Tokens，请求 5 次)\n- 近30天累计: 请求 2,392 次，实扣 $3.3546\n- 关联密钥 (4个):\n• [curser] 绑定分组: 月之亮面 (kimi) - 状态: 正常\n• [生图专用] 绑定分组: 福利生图 gpt (openai) - 状态: 正常\n• [CC] 绑定分组: Claude特价90%缓存(kiro)  (anthropic) - 状态: 正常\n• [测试] 绑定分组: 大肥鱼 (deepseek) - 状态: 正常"
-      }
-    }
-  ]
+  "accounts": []
 }

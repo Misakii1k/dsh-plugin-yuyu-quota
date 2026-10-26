@@ -30,6 +30,17 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function formatTokens(num: number): string {
+  const n = Number(num) || 0;
+  if (n < 1000) return String(n);
+  if (n < 1000000) {
+    const k = n / 1000;
+    return (k >= 100 ? k.toFixed(0) : k.toFixed(1)).replace(/\.0$/, '') + 'K';
+  }
+  const m = n / 1000000;
+  return (m >= 100 ? m.toFixed(1) : m.toFixed(2)).replace(/\.00$/, '').replace(/(\.[1-9])0$/, '$1') + 'M';
+}
+
 export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
   const isAlert = snapshot.isLowBalance;
   const balanceInt = Math.floor(snapshot.balance);
@@ -170,7 +181,7 @@ export function renderWidgetHtml(snapshot: BalanceSnapshot): string {
       </div>
       <div class="yuyu-grid-cell">
         <span style="color:#64748b;font-size:10px;">Tokens</span>
-        <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;">${snapshot.todayTokens.toLocaleString()}</span>
+        <span style="font-weight:600;font-size:12px;color:#1e293b;font-variant-numeric:tabular-nums;" title="${snapshot.todayTokens.toLocaleString()} Tokens">${formatTokens(snapshot.todayTokens)}</span>
       </div>
       <div class="yuyu-grid-cell">
         <span style="color:#64748b;font-size:10px;">密钥</span>

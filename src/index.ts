@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { YuyuApiClient } from './api.js';
 import { createYuyuBalanceTool } from './tool.js';
@@ -39,9 +40,10 @@ export interface MultiAccountStore {
  * 刷新间隔映射表 (ms)
  */
 const INTERVAL_MAP: Record<RefreshInterval, number> = {
+  '1s': 1000,
+  '5s': 5 * 1000,
   '30s': 30 * 1000,
   '1m': 60 * 1000,
-  '3m': 3 * 60 * 1000,
   '5m': 5 * 60 * 1000,
 };
 
@@ -63,7 +65,7 @@ export function loadAccountStore(): MultiAccountStore {
   const store: MultiAccountStore = {
     activeEmail: '',
     lastBrowserIat: 0,
-    refreshInterval: '3m',
+    refreshInterval: '30s',
     alertThreshold: 2.0,
     baseUrl: 'https://sub.anzhiyu.com',
     accounts: []
@@ -329,6 +331,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     return {
       ok: true,
       activeEmail: store.activeEmail,
+      refreshInterval: store.refreshInterval || '30s',
       snapshot: activeAcc?.snapshot || null,
       accounts: store.accounts.map(a => ({
         email: a.email,
@@ -399,6 +402,22 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         return;
       }
 
+      if (req.method === 'POST' && route === '/interval') {
+        const body = await readJsonBody(req);
+        const interval = String(body?.interval || '').trim() as RefreshInterval;
+        if (INTERVAL_MAP[interval]) {
+          store.refreshInterval = interval;
+          saveAccountStore(store);
+          sendJson(res, 200, buildResponsePayload({
+            refreshInterval: store.refreshInterval,
+            message: `刷新频率已设置为 ${interval}`
+          }));
+          return;
+        }
+        sendJson(res, 400, { ok: false, message: '无效的刷新频率参数' });
+        return;
+      }
+
       if (req.method === 'POST' && route === '/remove') {
         const body = await readJsonBody(req);
         const targetEmail = String(body?.email || '').trim();
@@ -415,6 +434,56 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         sendJson(res, 200, buildResponsePayload({
           message: `已移除账号 ${targetEmail}`
         }));
+        return;
+      }
+
+      if (req.method === 'GET' && route === '/tutorial') {
+        const tutorialCandidates = [
+          path.resolve(__dirname, '../tutorial.html'),
+          path.resolve(__dirname, './tutorial.html'),
+          path.join(process.cwd(), 'tutorial.html')
+        ];
+        for (const p of tutorialCandidates) {
+          if (fs.existsSync(p)) {
+            const html = fs.readFileSync(p, 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Access-Control-Allow-Origin': '*'
+            });
+            res.end(html);
+            return;
+          }
+        }
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Tutorial not found');
+        return;
+      }
+
+      if (req.method === 'POST' && route === '/open-tutorial') {
+        const tutorialCandidates = [
+          path.resolve(__dirname, '../tutorial.html'),
+          path.resolve(__dirname, './tutorial.html'),
+          path.join(process.cwd(), 'tutorial.html')
+        ];
+        let found = '';
+        for (const p of tutorialCandidates) {
+          if (fs.existsSync(p)) {
+            found = p;
+            break;
+          }
+        }
+        if (found) {
+          if (process.platform === 'win32') {
+            exec(`start "" "${found}"`);
+          } else if (process.platform === 'darwin') {
+            exec(`open "${found}"`);
+          } else {
+            exec(`xdg-open "${found}"`);
+          }
+          sendJson(res, 200, { ok: true, message: '已在浏览器中打开使用教程' });
+          return;
+        }
+        sendJson(res, 404, { ok: false, message: '未找到 tutorial.html 文件' });
         return;
       }
 

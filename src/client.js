@@ -8,9 +8,33 @@
   var SVG_WALLET = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V7H4a2 2 0 0 1 0-4h16v4"/><path d="M2 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M17 12a2 2 0 0 0 0 4h4v-4Z"/></svg>';
   var SVG_FISH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.46-3.44 6-7 6s-7.56-2.54-8.5-6Z"/><path d="M18 12v.5"/><path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/><path d="M7 10.67C7 8 5.58 5.97 2.73 5.5c-1 1.5-1 5 .5 6.5-1.5 1.5-1.5 5-.5 6.5 2.85-.47 4.27-2.5 4.27-5.17v-2.66Z"/></svg>';
   var SVG_REFRESH = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>';
+  var SVG_SETTINGS = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
   var SVG_BROWSER = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M2 8h20"/><circle cx="6" cy="6" r=".5" fill="currentColor"/></svg>';
   var SVG_CHEVRON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
   var SVG_CLOSE = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+  var SVG_BOOK = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>';
+
+  var INTERVAL_MS_MAP = {
+    '1s': 1000,
+    '5s': 5000,
+    '30s': 30000,
+    '1m': 60000,
+    '5m': 300000
+  };
+  var INTERVAL_LABEL_MAP = {
+    '1s': '1秒 (实时)',
+    '5s': '5秒',
+    '30s': '30秒',
+    '1m': '1分钟',
+    '5m': '5分钟'
+  };
+  var currentInterval = '30s';
+  try {
+    var savedInterval = window.localStorage.getItem('dsh_yuyu_refresh_interval');
+    if (savedInterval && INTERVAL_MS_MAP[savedInterval]) {
+      currentInterval = savedInterval;
+    }
+  } catch(e) {}
 
   function sameOriginApi(subPath) {
     var rel = 'yuyu-quota/api' + (subPath.charAt(0) === '/' ? subPath : '/' + subPath);
@@ -41,60 +65,23 @@
       });
   }
 
-  var initialAccounts = [
-    {
-      email: '878503820@qq.com',
-      balance: 7.02031123,
-      active: true,
-      snapshot: {
-        success: true,
-        email: '878503820@qq.com',
-        balance: 7.02031123,
-        totalRecharged: 13.90,
-        todayCost: 0.0000,
-        todayRawCost: 0.0000,
-        todayTokens: 0,
-        keysCount: 2,
-        todayRequests: 0,
-        totalRequests: 0,
-        totalActualCost: 0.0000
-      }
-    },
-    {
-      email: '3231640018@qq.com',
-      balance: 8.80628301,
-      active: false,
-      snapshot: {
-        success: true,
-        email: '3231640018@qq.com',
-        balance: 8.80628301,
-        totalRecharged: 48.00,
-        todayCost: 0.0038398176,
-        todayRawCost: 0.06399696,
-        todayTokens: 32444,
-        keysCount: 4,
-        todayRequests: 4,
-        totalRequests: 2391,
-        totalActualCost: 3.3544474473
-      }
-    }
-  ];
+  var initialAccounts = [];
 
   var tokenStore = {
-    activeEmail: '878503820@qq.com',
-    email: '878503820@qq.com',
-    balance: 7.02031123,
-    totalRecharged: 13.90,
+    activeEmail: '',
+    email: '',
+    balance: 0.00,
+    totalRecharged: 0.00,
     todayCost: 0.0000,
     todayRawCost: 0.0000,
     todayTokens: 0,
-    keysCount: 2,
+    keysCount: 0,
     todayRequests: 0,
     totalRequests: 0,
     totalActualCost: 0.0000,
     alertThreshold: 2.0,
     accounts: initialAccounts,
-    lastSync: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    lastSync: '未同步'
   };
 
   // 尝试从 localStorage 恢复上次选中的状态
@@ -143,6 +130,9 @@
     }
     if (body.activeEmail) {
       tokenStore.activeEmail = body.activeEmail;
+    }
+    if (body.refreshInterval && INTERVAL_MS_MAP[body.refreshInterval]) {
+      currentInterval = body.refreshInterval;
     }
     if (body.snapshot && body.snapshot.success) {
       applySnapshotFields(body.snapshot);
@@ -303,6 +293,17 @@
     }, 2800);
   }
 
+  function formatTokens(num) {
+    var n = Number(num) || 0;
+    if (n < 1000) return String(n);
+    if (n < 1000000) {
+      var k = n / 1000;
+      return (k >= 100 ? k.toFixed(0) : k.toFixed(1)).replace(/\.0$/, '') + 'K';
+    }
+    var m = n / 1000000;
+    return (m >= 100 ? m.toFixed(1) : m.toFixed(2)).replace(/\.00$/, '').replace(/(\.[1-9])0$/, '$1') + 'M';
+  }
+
   // 刷新 DOM 显示
   function updateUI() {
     var isLow = tokenStore.balance <= tokenStore.alertThreshold;
@@ -326,7 +327,10 @@
     }
     if (cardRecharge) cardRecharge.textContent = '累计充值 $' + tokenStore.totalRecharged.toFixed(2);
     if (cardCost) cardCost.textContent = '$' + tokenStore.todayCost.toFixed(4);
-    if (cardTokens) cardTokens.textContent = tokenStore.todayTokens.toLocaleString();
+    if (cardTokens) {
+      cardTokens.textContent = formatTokens(tokenStore.todayTokens);
+      cardTokens.title = tokenStore.todayTokens.toLocaleString() + ' Tokens';
+    }
     if (cardKeys) cardKeys.textContent = tokenStore.keysCount + ' 个';
     if (syncTime) syncTime.textContent = '已同步 ' + tokenStore.lastSync;
 
@@ -430,9 +434,29 @@
       '      <div style="width:24px;height:24px;border-radius:6px;background:#eff6ff;border:1px solid #dbeafe;display:flex;align-items:center;justify-content:center;color:#2563eb;transition:transform 0.2s cubic-bezier(0.34,1.56,0.64,1);">' + SVG_FISH + '</div>',
       '      <span>鱼鱼 API</span>',
       '    </div>',
-      '    <div style="display:flex;align-items:center;gap:6px;">',
-      '      <div id="yuyu-avatars-row" style="display:flex;gap:5px;"></div>',
+      '    <div style="display:flex;align-items:center;gap:4px;">',
+      '      <div id="yuyu-avatars-row" style="display:flex;gap:4px;"></div>',
       '      <button id="yuyu-card-refresh" style="background:#f8fafc;border:1px solid #e2e8f0;cursor:pointer;padding:4px;color:#64748b;display:inline-flex;border-radius:5px;transition:all 0.16s ease;" title="刷新数据">' + SVG_REFRESH + '</button>',
+      '      <button id="yuyu-card-settings-btn" style="background:#f8fafc;border:1px solid #e2e8f0;cursor:pointer;padding:4px;color:#64748b;display:inline-flex;border-radius:5px;transition:all 0.16s ease;" title="刷新频率设置">' + SVG_SETTINGS + '</button>',
+      '    </div>',
+      '  </div>',
+      '  <div id="yuyu-settings-panel" style="max-height:0;opacity:0;overflow:hidden;transition:max-height 0.24s cubic-bezier(0.16,1,0.3,1), opacity 0.2s ease, margin 0.2s ease;margin-bottom:0;">',
+      '    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px;margin-bottom:8px;">',
+      '      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:10.5px;color:#475569;font-weight:600;">',
+      '        <span>刷新频率</span>',
+      '        <span id="yuyu-interval-hint" style="font-weight:500;color:#2563eb;font-variant-numeric:tabular-nums;">当前: ' + (INTERVAL_LABEL_MAP[currentInterval] || currentInterval) + '</span>',
+      '      </div>',
+      '      <div id="yuyu-interval-tabs" style="display:flex;gap:3px;background:#e2e8f0;padding:2px;border-radius:6px;">',
+      '        <button type="button" class="yuyu-interval-tab" data-val="1s">1秒</button>',
+      '        <button type="button" class="yuyu-interval-tab" data-val="5s">5秒</button>',
+      '        <button type="button" class="yuyu-interval-tab" data-val="30s">30秒</button>',
+      '        <button type="button" class="yuyu-interval-tab" data-val="1m">1分</button>',
+      '        <button type="button" class="yuyu-interval-tab" data-val="5m">5分</button>',
+      '      </div>',
+      '      <div style="margin-top:8px;padding-top:7px;border-top:1px dashed #e2e8f0;display:flex;justify-content:space-between;align-items:center;">',
+      '        <span style="font-size:10.5px;color:#64748b;">新手上手与特性指引</span>',
+      '        <button id="yuyu-open-tutorial-btn" type="button" style="background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;padding:3px 8px;font-size:10.5px;font-weight:500;color:#2563eb;cursor:pointer;display:inline-flex;align-items:center;gap:4px;transition:all 0.15s ease;" title="查看动效新手使用教程">' + SVG_BOOK + '<span>使用教程</span></button>',
+      '      </div>',
       '    </div>',
       '  </div>',
       '  <div style="text-align:center;padding:4px 0 6px 0;">',
@@ -471,10 +495,87 @@
     var card = container.querySelector('#yuyu-card-popup');
     var syncBtn = container.querySelector('#yuyu-card-sync');
     var refreshBtn = container.querySelector('#yuyu-card-refresh');
+    var settingsBtn = container.querySelector('#yuyu-card-settings-btn');
+    var settingsPanel = container.querySelector('#yuyu-settings-panel');
+    var intervalHint = container.querySelector('#yuyu-interval-hint');
     var syncLabel = container.querySelector('#yuyu-sync-label');
     var drawerToggle = container.querySelector('#yuyu-drawer-toggle');
     var drawerContent = container.querySelector('#yuyu-drawer-content');
     var drawerArrow = container.querySelector('#yuyu-drawer-arrow');
+
+    var isSettingsOpen = false;
+    function renderIntervalTabsDOM() {
+      var tabs = container.querySelectorAll('.yuyu-interval-tab');
+      tabs.forEach(function(btn) {
+        var val = btn.getAttribute('data-val');
+        var isAct = (val === currentInterval);
+        btn.style.cssText = [
+          'flex:1;padding:4px 0;border:none;border-radius:5px;cursor:pointer;font-size:10.5px;transition:all 0.16s ease;',
+          isAct
+            ? 'background:#ffffff;color:#0f172a;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.08);'
+            : 'background:transparent;color:#64748b;font-weight:500;'
+        ].join('');
+      });
+      if (intervalHint) {
+        intervalHint.textContent = '当前: ' + (INTERVAL_LABEL_MAP[currentInterval] || currentInterval);
+      }
+    }
+
+    settingsBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      isSettingsOpen = !isSettingsOpen;
+      var gearSvg = settingsBtn.querySelector('svg');
+      if (gearSvg) {
+        gearSvg.style.transition = 'transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1)';
+        gearSvg.style.transform = isSettingsOpen ? 'rotate(60deg)' : 'none';
+      }
+      if (isSettingsOpen) {
+        settingsPanel.style.maxHeight = '135px';
+        settingsPanel.style.opacity = '1';
+        settingsPanel.style.marginBottom = '6px';
+      } else {
+        settingsPanel.style.maxHeight = '0';
+        settingsPanel.style.opacity = '0';
+        settingsPanel.style.marginBottom = '0';
+      }
+    });
+
+    var tutorialBtn = container.querySelector('#yuyu-open-tutorial-btn');
+    if (tutorialBtn) {
+      tutorialBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        requestBackend('/open-tutorial', {
+          method: 'POST'
+        }).then(function(res) {
+          if (!res || !res.ok) {
+            window.open('http://127.0.0.1:53788/yuyu-quota/api/tutorial', '_blank');
+          }
+        }).catch(function() {
+          window.open('http://127.0.0.1:53788/yuyu-quota/api/tutorial', '_blank');
+        });
+      });
+    }
+
+    var intervalBtns = container.querySelectorAll('.yuyu-interval-tab');
+    intervalBtns.forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var val = btn.getAttribute('data-val');
+        if (!val || val === currentInterval) return;
+        currentInterval = val;
+        try { window.localStorage.setItem('dsh_yuyu_refresh_interval', currentInterval); } catch(err) {}
+        renderIntervalTabsDOM();
+        rescheduleTimer(true);
+        requestBackend('/interval', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ interval: currentInterval })
+        });
+        showTip('刷新频率已设为: ' + (INTERVAL_LABEL_MAP[currentInterval] || currentInterval));
+      });
+    });
+
+    renderIntervalTabsDOM();
 
     // 抽屉平滑阻尼折叠展开
     var isDrawerOpen = true;
@@ -490,6 +591,31 @@
       }
     });
 
+    // 智能防封调度器
+    var pollingTimer = null;
+    function rescheduleTimer(isImmediate) {
+      if (pollingTimer) {
+        clearTimeout(pollingTimer);
+        pollingTimer = null;
+      }
+
+      var effectiveMs = INTERVAL_MS_MAP[currentInterval] || 30000;
+      // 智能防封策略：如果卡片收起静默中，且设定的频率快于 30秒，则后台自动降频为 30秒
+      if (!isOpen && effectiveMs < 30000) {
+        effectiveMs = 30000;
+      }
+
+      if (isImmediate) {
+        fetchRemoteBalance(null, { syncBrowser: false });
+      }
+
+      pollingTimer = setTimeout(function tick() {
+        fetchRemoteBalance(function() {
+          rescheduleTimer(false);
+        }, { syncBrowser: false });
+      }, effectiveMs);
+    }
+
     // 弹窗优雅从右下角呼出与隐藏
     var isOpen = false;
     pill.addEventListener('click', function(e) {
@@ -498,8 +624,10 @@
       if (isOpen) {
         card.classList.add('is-open');
         fetchRemoteBalance(null, { syncBrowser: true });
+        rescheduleTimer(true);
       } else {
         card.classList.remove('is-open');
+        rescheduleTimer(false);
       }
     });
 
@@ -508,12 +636,14 @@
       if (isOpen) {
         isOpen = false;
         card.classList.remove('is-open');
+        rescheduleTimer(false);
       }
     });
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape' && isOpen) {
         isOpen = false;
         card.classList.remove('is-open');
+        rescheduleTimer(false);
       }
     });
 
@@ -544,14 +674,9 @@
       }, { action: 'sync', forceCapture: false });
     });
 
-    // 首次挂载立即检测一次浏览器最新账号，随后每 3 分钟定时刷新当前选中账号
+    // 首次挂载立即检测一次浏览器最新账号，随后按调度器执行
     fetchRemoteBalance(null, { syncBrowser: true });
-    if (window.__yuyuQuotaTimer) {
-      clearInterval(window.__yuyuQuotaTimer);
-    }
-    window.__yuyuQuotaTimer = setInterval(function() {
-      fetchRemoteBalance(null, { syncBrowser: false });
-    }, 3 * 60 * 1000);
+    rescheduleTimer(false);
   }
 
   // 模块工厂函数
@@ -636,23 +761,56 @@
               style: { margin: 0, fontSize: '18px', fontWeight: 600 }
             }, '鱼鱼API 多账号资产监控')
           ]),
-          react.createElement('button', {
-            key: 'sync-btn',
-            onClick: handleSyncBrowser,
-            style: {
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 12px',
-              borderRadius: '6px',
-              border: '1px solid #cbd5e1',
-              background: '#ffffff',
-              color: '#334155',
-              fontSize: '12px',
-              fontWeight: 500,
-              cursor: 'pointer'
-            }
-          }, '从浏览器同步当前账号')
+          react.createElement('div', {
+            key: 'header-actions',
+            style: { display: 'flex', alignItems: 'center', gap: '8px' }
+          }, [
+            react.createElement('button', {
+              key: 'tutorial-btn',
+              onClick: function() {
+                requestBackend('/open-tutorial', { method: 'POST' }).catch(function() {
+                  window.open('http://127.0.0.1:53788/yuyu-quota/api/tutorial', '_blank');
+                });
+              },
+              style: {
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                border: '1px solid #bfdbfe',
+                background: '#eff6ff',
+                color: '#2563eb',
+                fontSize: '12px',
+                fontWeight: 500,
+                cursor: 'pointer'
+              }
+            }, [
+              react.createElement('span', {
+                key: 'ico',
+                style: { display: 'inline-flex' },
+                dangerouslySetInnerHTML: { __html: SVG_BOOK }
+              }),
+              react.createElement('span', { key: 'txt' }, '使用教程')
+            ]),
+            react.createElement('button', {
+              key: 'sync-btn',
+              onClick: handleSyncBrowser,
+              style: {
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 12px',
+                borderRadius: '6px',
+                border: '1px solid #cbd5e1',
+                background: '#ffffff',
+                color: '#334155',
+                fontSize: '12px',
+                fontWeight: 500,
+                cursor: 'pointer'
+              }
+            }, '从浏览器同步当前账号')
+          ])
         ]),
         react.createElement('div', {
           key: 'acc-list',

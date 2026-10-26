@@ -1,0 +1,15 @@
+======================================================================
+【直接复制以下整段提示词，发给你的 AI Agent（DSH Agent / Claude 等）】
+======================================================================
+
+请帮我安装当前解压目录下的 DSH 插件包（dsh-plugin-yuyu-quota-1.0.9.tgz）。
+为了避免海外官方 npm 源网络丢包导致卡顿十几分钟，请在终端执行以下极速安装命令：
+
+PowerShell 终端执行：
+$env:npm_config_registry = "https://registry.npmmirror.com"
+dsh plugin --profile desktop add "$PWD\dsh-plugin-yuyu-quota-1.0.9.tgz"
+
+如果在没有 dsh 命令的环境下，请直接运行同目录下的：
+.\一键安装到DSH.bat
+
+安装完成后，请提示我在 DeepSeek Harness 窗口中按 Ctrl + R 刷新界面即可查看！
