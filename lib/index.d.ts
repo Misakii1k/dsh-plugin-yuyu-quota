@@ -84,6 +84,7 @@ export declare function createYuyuService(initialConfig?: Partial<PluginConfig>,
     sessionTracker: {
         observe: (session: any, event: any) => void;
         forget: (session: any) => void;
+        isAgentRunning: () => boolean;
         dispose(): void;
     };
     runUpdateCheck: (force?: boolean) => Promise<UpdateInfo>;

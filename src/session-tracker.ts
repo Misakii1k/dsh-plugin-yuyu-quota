@@ -399,9 +399,19 @@ export function createSessionTracker(hooks: SessionTrackerHooks) {
     if (id) sessions.delete(id);
   }
 
+  /** 判断当前是否有任何会话正在执行 Turn（即 Agent 运行中） */
+  function isAgentRunning(): boolean {
+    if (disposed) return false;
+    for (const state of sessions.values()) {
+      if (state.turn !== null) return true;
+    }
+    return false;
+  }
+
   return {
     observe,
     forget,
+    isAgentRunning,
     dispose() {
       disposed = true;
       sessions.clear();

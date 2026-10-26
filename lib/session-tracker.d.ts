@@ -19,6 +19,7 @@ export interface SessionTrackerHooks {
 export declare function createSessionTracker(hooks: SessionTrackerHooks): {
     observe: (session: any, event: any) => void;
     forget: (session: any) => void;
+    isAgentRunning: () => boolean;
     dispose(): void;
 };
 export type SessionTracker = ReturnType<typeof createSessionTracker>;

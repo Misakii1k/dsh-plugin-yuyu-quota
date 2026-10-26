@@ -320,6 +320,11 @@ function sha256OfFile(file: string): string {
   return hash.digest('hex');
 }
 
+export interface DownloadUpdateOptions {
+  targetDir?: string;
+  onProgress?: (loaded: number, total: number) => void;
+}
+
 /**
  * 下载更新包到临时目录，并（在提供了哈希/体积时）校验完整性。
  *
@@ -327,7 +332,7 @@ function sha256OfFile(file: string): string {
  */
 export async function downloadUpdate(
   info: UpdateInfo,
-  options: { targetDir?: string } = {}
+  options: DownloadUpdateOptions = {}
 ): Promise<DownloadResult> {
   const url = String(info.downloadUrl || '').trim();
   if (!/^https?:\/\//i.test(url)) {
@@ -355,7 +360,30 @@ export async function downloadUpdate(
     if (!response.ok) {
       return { ok: false, error: `下载失败: HTTP ${response.status}` };
     }
-    const buffer = Buffer.from(await response.arrayBuffer());
+
+    const totalBytes = Number(response.headers.get('content-length')) || (typeof info.fileSize === 'number' ? info.fileSize : 0);
+    const chunks: Uint8Array[] = [];
+    let loadedBytes = 0;
+
+    if (response.body && typeof (response.body as any).getReader === 'function') {
+      const reader = (response.body as any).getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          loadedBytes += value.length;
+          options.onProgress?.(loadedBytes, totalBytes > 0 ? totalBytes : loadedBytes);
+        }
+      }
+    } else {
+      const arr = await response.arrayBuffer();
+      chunks.push(new Uint8Array(arr));
+      loadedBytes = arr.byteLength;
+      options.onProgress?.(loadedBytes, totalBytes > 0 ? totalBytes : loadedBytes);
+    }
+
+    const buffer = Buffer.concat(chunks);
 
     if (typeof info.fileSize === 'number' && info.fileSize > 0 && buffer.length !== info.fileSize) {
       return {
@@ -377,6 +405,37 @@ export async function downloadUpdate(
     return { ok: false, error: err?.message || String(err) };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * 自动解压并安装新版本到 DSH 本地插件目录。
+ */
+export async function installUpdate(tgzFilePath: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const userHome = os.homedir();
+    const targetDir = path.join(userHome, '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-plugin-yuyu-quota');
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    const { execFile } = await import('node:child_process');
+    await new Promise<void>((resolve, reject) => {
+      execFile('tar.exe', ['-xzf', tgzFilePath, '-C', targetDir, '--strip-components', '1'], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => {
+        execFile('dsh', ['plugin', '--profile', 'desktop', 'add', tgzFilePath], () => resolve());
+      });
+    } catch {}
+
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
   }
 }
 

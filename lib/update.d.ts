@@ -30,12 +30,21 @@ export interface DownloadResult {
     sha256?: string;
     error?: string;
 }
+export interface DownloadUpdateOptions {
+    targetDir?: string;
+    onProgress?: (loaded: number, total: number) => void;
+}
 /**
  * 下载更新包到临时目录，并（在提供了哈希/体积时）校验完整性。
  *
  * 安全约束：只接受 http(s) 地址；校验失败会删除临时文件，绝不返回半成品路径。
  */
-export declare function downloadUpdate(info: UpdateInfo, options?: {
-    targetDir?: string;
-}): Promise<DownloadResult>;
+export declare function downloadUpdate(info: UpdateInfo, options?: DownloadUpdateOptions): Promise<DownloadResult>;
+/**
+ * 自动解压并安装新版本到 DSH 本地插件目录。
+ */
+export declare function installUpdate(tgzFilePath: string): Promise<{
+    ok: boolean;
+    error?: string;
+}>;
 export { DEFAULT_GITHUB_REPO };
