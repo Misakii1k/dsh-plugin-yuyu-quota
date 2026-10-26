@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-yuyu-quota",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "DeepSeek-Harness 插件：实时监控鱼鱼API (sub.anzhiyu.com) 多账号余额与额度，并在每轮对话结束后用 Windows 原生通知汇报本轮 Token 与实扣额度（零MCP依赖，可拖动浮窗，支持 GitHub + Cloudflare 云端版本推送）",
   "type": "module",
   "main": "./lib/index.js",
