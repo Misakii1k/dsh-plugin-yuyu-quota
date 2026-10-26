@@ -784,7 +784,7 @@
       '        <span id="yuyu-version-label" style="font-weight:500;color:#2563eb;font-variant-numeric:tabular-nums;">v' + (tokenStore.version || '—') + '</span>',
       '      </div>',
       '      <div id="yuyu-update-row" style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:6px;">',
-      '        <span id="yuyu-update-hint" style="font-size:10px;color:#94a3b8;">尚未检查</span>',
+      '        <span id="yuyu-update-hint" style="font-size:10px;color:#94a3b8;">尚未检查更新</span>',
       '        <button id="yuyu-update-check" type="button" style="background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;padding:3px 8px;font-size:10.5px;font-weight:500;color:#2563eb;cursor:pointer;white-space:nowrap;">检查更新</button>',
       '      </div>',
       '    </div>',
@@ -1067,12 +1067,12 @@
     function renderUpdateInfo(info) {
       if (!updateHint) return;
       if (!info) {
-        updateHint.textContent = '尚未检查';
+        updateHint.textContent = '尚未检查更新';
         updateHint.style.color = '#94a3b8';
         return;
       }
       if (info.available && info.latestVersion) {
-        updateHint.textContent = '发现新版本 v' + info.latestVersion + '，可下载';
+        updateHint.textContent = '检测到最新版本 v' + info.latestVersion + '，可下载更新';
         updateHint.style.color = '#2563eb';
         if (updateCheckBtn) updateCheckBtn.textContent = '下载更新';
         return;
@@ -1081,8 +1081,8 @@
         updateHint.textContent = '检查失败：' + String(info.error).slice(0, 60);
         updateHint.style.color = '#b45309';
       } else {
-        updateHint.textContent = '已是最新（' + new Date(info.checkedAt).toLocaleTimeString() + '）';
-        updateHint.style.color = '#94a3b8';
+        updateHint.textContent = '您当前已是最新版本（' + new Date(info.checkedAt).toLocaleTimeString() + '）';
+        updateHint.style.color = '#10b981';
       }
       if (updateCheckBtn) updateCheckBtn.textContent = '检查更新';
     }
@@ -1111,8 +1111,8 @@
             } else if (body && body.update) {
               tokenStore.updateInfo = body.update;
               renderUpdateInfo(body.update);
-              if (body.update.available) showTip('发现新版本 v' + body.update.latestVersion);
-              else showTip('当前已是最新版本');
+              if (body.update.available) showTip('检测到最新版本 v' + body.update.latestVersion + '，可点击下载更新');
+              else showTip('您当前已是最新版本');
             }
           })
           .catch(function() {
