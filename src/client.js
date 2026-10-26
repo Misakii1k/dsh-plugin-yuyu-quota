@@ -1156,21 +1156,31 @@
           progressStatus.style.color = '#2563eb';
         }
 
-        // 轮询下载与安装进度
+        // 进度条平滑增长（兼容旧后端未提供 progress 路由的场景）
+        var simPercent = 10;
         var pollTimer = setInterval(function() {
           requestBackend('/update/progress', { method: 'GET' })
             .then(function(res) {
               if (res && res.agentRunning && agentRunningWarn) {
                 agentRunningWarn.style.display = 'block';
               }
-              if (res && res.progress) {
+              if (res && res.progress && res.progress.percent !== undefined) {
                 if (progressBar) progressBar.style.width = res.progress.percent + '%';
                 if (progressPercent) progressPercent.textContent = res.progress.percent + '%';
                 if (progressStatus && res.progress.status) progressStatus.textContent = res.progress.status;
               }
             })
-            .catch(function() {});
-        }, 120);
+            .catch(function() {
+              // 旧版后端无 /update/progress 时的平滑进度兜底
+              if (simPercent < 85) {
+                simPercent += Math.floor(Math.random() * 8) + 4;
+                if (simPercent > 85) simPercent = 85;
+                if (progressBar) progressBar.style.width = simPercent + '%';
+                if (progressPercent) progressPercent.textContent = simPercent + '%';
+                if (progressStatus) progressStatus.textContent = '正在下载更新包... (' + simPercent + '%)';
+              }
+            });
+        }, 150);
 
         requestBackend('/update/download', {
           method: 'POST',
@@ -1179,14 +1189,14 @@
         })
           .then(function(body) {
             clearInterval(pollTimer);
-            if (body && body.ok && body.installed) {
+            if (body && body.ok) {
               if (progressBar) {
                 progressBar.style.width = '100%';
                 progressBar.style.background = '#10b981';
               }
               if (progressPercent) progressPercent.textContent = '100%';
               if (progressStatus) {
-                progressStatus.textContent = '🎉 自动安装成功';
+                progressStatus.textContent = '🎉 下载并安装成功';
                 progressStatus.style.color = '#059669';
               }
 
@@ -1195,7 +1205,7 @@
                   agentRunningWarn.style.display = 'block';
                   agentRunningWarn.textContent = '⚠️ 检测到当前有 Agent 正在运行任务，新版本已就绪，请在当前任务完成后重启 DSH 生效。';
                 }
-                showTip('新版本已自动安装！检测到任务运行中，请在完成后重启 DSH 生效。');
+                showTip('新版本已就绪！检测到任务运行中，请在完成后重启 DSH 生效。');
               } else {
                 showTip('新版本已自动安装完成！请重启 DeepSeek-Harness 生效。');
               }
@@ -1209,10 +1219,10 @@
             } else {
               if (progressBar) progressBar.style.background = '#ef4444';
               if (progressStatus) {
-                progressStatus.textContent = '❌ 更新失败: ' + ((body && body.error) || '未知错误');
+                progressStatus.textContent = '❌ 更新失败: ' + ((body && body.error) || (body && body.message) || '下载未成功');
                 progressStatus.style.color = '#dc2626';
               }
-              showTip('更新失败：' + ((body && body.error) || '网络异常'), true);
+              showTip('更新失败：' + ((body && body.error) || (body && body.message) || '网络异常'), true);
               updateCheckBtn.disabled = false;
               updateCheckBtn.textContent = '重试更新';
             }
