@@ -48,6 +48,8 @@ export interface MultiAccountStore {
 }
 /** 用户偏好的出厂默认值 */
 export declare function defaultPreferences(): PluginPreferences;
+/** 解析音效名称对应的本地音频文件绝对路径 */
+export declare function resolveSoundFilePath(soundKey?: string): string | undefined;
 /**
  * 把任意外部输入收敛成合法偏好。
  * 只接受已知键，避免通过 HTTP 把任意字段写进配置文件。

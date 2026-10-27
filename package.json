@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-yuyu-quota",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "DeepSeek-Harness 插件：实时监控鱼鱼API (sub.anzhiyu.com) 多账号余额与额度，支持小鲸鱼立绘Q弹挂件与极简胶囊双模式，凭据自动续期免重复登录，暗色模式，内置提示音效与SVG大对话泡泡，充值一键跳转",
   "type": "module",
   "main": "./lib/index.js",

@@ -99,6 +99,30 @@ const SOUND_PRESETS = new Set([
   'none'
 ]);
 
+/** 解析音效名称对应的本地音频文件绝对路径 */
+export function resolveSoundFilePath(soundKey?: string): string | undefined {
+  if (!soundKey || soundKey === 'none') return undefined;
+  let fileName: string | undefined;
+  if (soundKey === 'task-end-a') fileName = 'task-end-a.wav';
+  else if (soundKey === 'cost-default') fileName = 'cost-default.wav';
+  else if (soundKey === 'minecraft-exp-orb') fileName = 'minecraft-exp-orb.wav';
+  else if (soundKey === 'duck') fileName = Math.random() > 0.5 ? 'Ya1.mp3' : 'Ya2.mp3';
+  else if (soundKey === 'fx1') fileName = Math.random() > 0.5 ? 'D1.mp3' : 'D2.mp3';
+  else if (soundKey.endsWith('.wav') || soundKey.endsWith('.mp3')) fileName = soundKey;
+
+  if (!fileName) return undefined;
+
+  const candidates = [
+    path.resolve(__dirname, '../assets', fileName),
+    path.resolve(__dirname, './assets', fileName),
+    path.join(process.cwd(), 'assets', fileName)
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return undefined;
+}
+
 /**
  * 把任意外部输入收敛成合法偏好。
  * 只接受已知键，避免通过 HTTP 把任意字段写进配置文件。
@@ -130,7 +154,7 @@ export function sanitizePreferences(input: any, base: PluginPreferences): Plugin
   }
 
   if (input.whaleModel === 'DSniang1' || input.whaleModel === 'DSniang02' || input.whaleModel === 'DSH2') {
-    next.whaleModel = input.whaleModel;
+    next.whaleModel = 'DSniang1';
   }
 
   if (typeof input.soundEffect === 'string') {
@@ -983,10 +1007,12 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       lines.push(`当前余额 $${report.balanceAfter.toFixed(2)}`);
     }
 
+    const customSoundPath = resolveSoundFilePath(prefs.soundEffect);
     await sendDesktopNotification({
       title: `${titlePrefix} · ${report.sessionTitle}`.slice(0, 110),
       body: lines.join('\n'),
-      sound: prefs.notifySound === 'none' ? false : (prefs.notifySound as NotifySound),
+      sound: prefs.soundEffect === 'none' ? false : (customSoundPath ? false : (prefs.notifySound === 'none' ? false : (prefs.notifySound as NotifySound))),
+      customSoundPath,
       launch: 'dsh://open'
     });
   };
@@ -1195,7 +1221,8 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
       if (req.method === 'POST' && route === '/notify/test') {
         const body = await readJsonBody(req);
-        const sound = store.preferences.notifySound;
+        const soundKey = typeof body?.soundEffect === 'string' ? body.soundEffect : store.preferences.soundEffect;
+        const customSoundPath = resolveSoundFilePath(soundKey);
         const result = await sendDesktopNotification({
           title: '任务完成 · 鱼鱼配额插件测试通知',
           body: [
@@ -1203,7 +1230,8 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
             '会话累计 45,678 Tokens · $0.0456',
             '这是一条测试通知，用来确认声音与弹窗是否正常'
           ].join('\n'),
-          sound: body?.silent === true ? false : (sound === 'none' ? false : (sound as NotifySound)),
+          sound: body?.silent === true || soundKey === 'none' ? false : (customSoundPath ? false : (store.preferences.notifySound === 'none' ? false : (store.preferences.notifySound as NotifySound))),
+          customSoundPath,
           launch: 'dsh://open'
         });
         sendJson(res, 200, {
@@ -1215,8 +1243,11 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       }
 
       if (req.method === 'POST' && route === '/sound/test') {
-        const played = await playSystemAlertSound();
-        sendJson(res, 200, { ok: played, message: played ? '已播放系统提示音' : '播放失败' });
+        const body = await readJsonBody(req);
+        const soundKey = typeof body?.sound === 'string' ? body.sound : store.preferences.soundEffect;
+        const customPath = resolveSoundFilePath(soundKey);
+        const played = await playSystemAlertSound(customPath);
+        sendJson(res, 200, { ok: played, message: played ? '已播放提示音' : '播放失败' });
         return;
       }
 
@@ -1341,10 +1372,10 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       }
 
       if (req.method === 'POST' && route === '/open-topup') {
-        if (openExternal('https://sub.anzhiyu.com/topup')) {
-          sendJson(res, 200, { ok: true, message: '已在浏览器中打开充值页面' });
+        if (openExternal('https://sub.anzhiyu.com/recharge-center')) {
+          sendJson(res, 200, { ok: true, message: '已在浏览器中打开充值中心' });
         } else {
-          sendJson(res, 500, { ok: false, message: '打开充值页面失败' });
+          sendJson(res, 500, { ok: false, message: '打开充值中心失败' });
         }
         return;
       }

@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { createSessionTracker } from '../lib/session-tracker.js';
 import { compareVersions, cleanVersion, normalizeFeedUrl, resolveDownloadUrl } from '../lib/update.js';
-import { sanitizePreferences, defaultPreferences, normalizeWidgetPosition } from '../lib/index.js';
+import { sanitizePreferences, defaultPreferences, normalizeWidgetPosition, resolveSoundFilePath } from '../lib/index.js';
 
 let passed = 0;
 let failed = 0;
@@ -326,6 +326,26 @@ test('非法坐标返回 null', () => {
 test('越界坐标被钳制', () => {
   const pos = normalizeWidgetPosition({ x: 1e9, y: -1e9, edge: 'free' });
   assert.ok(pos.x <= 20000 && pos.y >= -2000);
+});
+
+console.log('\n[7] 音效路径解析与经典款立绘收敛');
+test('解析有效音频文件绝对路径', () => {
+  const endWav = resolveSoundFilePath('task-end-a');
+  assert.ok(endWav && endWav.endsWith('task-end-a.wav'));
+  const expWav = resolveSoundFilePath('minecraft-exp-orb');
+  assert.ok(expWav && expWav.endsWith('minecraft-exp-orb.wav'));
+  const costWav = resolveSoundFilePath('cost-default');
+  assert.ok(costWav && costWav.endsWith('cost-default.wav'));
+  const duckSound = resolveSoundFilePath('duck');
+  assert.ok(duckSound && (duckSound.endsWith('Ya1.mp3') || duckSound.endsWith('Ya2.mp3')));
+  assert.equal(resolveSoundFilePath('none'), undefined);
+});
+
+test('立绘统一收敛为经典款 DSniang1', () => {
+  const base = defaultPreferences();
+  assert.equal(sanitizePreferences({ whaleModel: 'DSniang02' }, base).whaleModel, 'DSniang1');
+  assert.equal(sanitizePreferences({ whaleModel: 'DSH2' }, base).whaleModel, 'DSniang1');
+  assert.equal(sanitizePreferences({ whaleModel: 'DSniang1' }, base).whaleModel, 'DSniang1');
 });
 
 console.log(`\n结果：${passed} 通过 / ${failed} 失败\n`);

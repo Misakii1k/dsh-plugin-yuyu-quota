@@ -23,6 +23,8 @@ export interface DesktopNotificationOptions {
     body: string;
     /** 是否播放 Windows 官方提示音 */
     sound?: boolean | NotifySound;
+    /** 自定义音频绝对路径（如存在则优先播放该音频，并静音 Windows 默认提示音） */
+    customSoundPath?: string;
     /** 点击通知后唤起的协议地址，默认 dsh://open */
     launch?: string;
     /** 仅用于日志/诊断，不写入通知内容 */
@@ -40,5 +42,5 @@ export declare function sendDesktopNotification(options: DesktopNotificationOpti
     detail?: string;
 }>;
 /** 只发声、不弹通知；用于“通知被节流时至少给个声音反馈”或测试音效。 */
-export declare function playSystemAlertSound(): Promise<boolean>;
+export declare function playSystemAlertSound(customSoundPath?: string): Promise<boolean>;
 export { DSH_APP_ID };

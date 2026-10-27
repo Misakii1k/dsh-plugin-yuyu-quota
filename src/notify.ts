@@ -42,6 +42,8 @@ export interface DesktopNotificationOptions {
   body: string;
   /** 是否播放 Windows 官方提示音 */
   sound?: boolean | NotifySound;
+  /** 自定义音频绝对路径（如存在则优先播放该音频，并静音 Windows 默认提示音） */
+  customSoundPath?: string;
   /** 点击通知后唤起的协议地址，默认 dsh://open */
   launch?: string;
   /** 仅用于日志/诊断，不写入通知内容 */
@@ -80,16 +82,42 @@ function buildToastScript(): string {
     '  }',
     '  if ($texts.Count -eq 0) { $texts += "<text>DSH 提醒</text>" }',
     "  $launch = if ([string]::IsNullOrWhiteSpace($env:YUYU_TOAST_LAUNCH)) { 'dsh://open' } else { $env:YUYU_TOAST_LAUNCH }",
-    "  $audio = if ([string]::IsNullOrWhiteSpace($env:YUYU_TOAST_SOUND)) { '<audio silent=\"true\" />' } else { '<audio src=\"ms-winsoundevent:' + $env:YUYU_TOAST_SOUND + '\" loop=\"false\" />' }",
+    "  $hasCustomSound = (![string]::IsNullOrWhiteSpace($env:YUYU_CUSTOM_SOUND_PATH) -and (Test-Path $env:YUYU_CUSTOM_SOUND_PATH))",
+    "  $audio = if ($hasCustomSound -or [string]::IsNullOrWhiteSpace($env:YUYU_TOAST_SOUND)) { '<audio silent=\"true\" />' } else { '<audio src=\"ms-winsoundevent:' + $env:YUYU_TOAST_SOUND + '\" loop=\"false\" />' }",
     "  $xml = '<toast activationType=\"protocol\" launch=\"' + [System.Security.SecurityElement]::Escape($launch) + '\"><visual><binding template=\"ToastGeneric\">' + ($texts -join '') + '</binding></visual>' + $audio + '</toast>'",
     '  $doc = New-Object Windows.Data.Xml.Dom.XmlDocument',
     '  $doc.LoadXml($xml)',
     '  $toast = New-Object Windows.UI.Notifications.ToastNotification $doc',
     '  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:YUYU_TOAST_APP_ID).Show($toast)',
+    '  if ($hasCustomSound) {',
+    '    try {',
+    '      $p = $env:YUYU_CUSTOM_SOUND_PATH',
+    "      if ($p -match '\\.wav$') {",
+    '        (New-Object System.Media.SoundPlayer $p).Play()',
+    '      } else {',
+    '        Add-Type -AssemblyName presentationCore',
+    '        $mediaPlayer = New-Object System.Windows.Media.MediaPlayer',
+    '        $mediaPlayer.Open([Uri]$p)',
+    '        $mediaPlayer.Play()',
+    '      }',
+    '    } catch { }',
+    '  }',
     "  Write-Output 'TOAST_OK'",
     '} catch {',
     "  Write-Output ('TOAST_FAIL: ' + $_.Exception.Message)",
-    "  if ($env:YUYU_TOAST_SOUND -ne '') {",
+    "  if (![string]::IsNullOrWhiteSpace($env:YUYU_CUSTOM_SOUND_PATH) -and (Test-Path $env:YUYU_CUSTOM_SOUND_PATH)) {",
+    '    try {',
+    '      $p = $env:YUYU_CUSTOM_SOUND_PATH',
+    "      if ($p -match '\\.wav$') {",
+    '        (New-Object System.Media.SoundPlayer $p).PlaySync()',
+    '      } else {',
+    '        Add-Type -AssemblyName presentationCore',
+    '        $mediaPlayer = New-Object System.Windows.Media.MediaPlayer',
+    '        $mediaPlayer.Open([Uri]$p)',
+    '        $mediaPlayer.Play()',
+    '      }',
+    '    } catch { }',
+    "  } elseif ($env:YUYU_TOAST_SOUND -ne '') {",
     '    try {',
     "      $wav = Join-Path $env:WINDIR 'Media\\Windows Notify.wav'",
     '      if (Test-Path $wav) { (New-Object System.Media.SoundPlayer $wav).PlaySync() }',
@@ -118,6 +146,9 @@ export function sendDesktopNotification(
 
   const lines = splitLines(options.body);
   const soundName = resolveSound(options.sound);
+  const customSound = options.customSoundPath && typeof options.customSoundPath === 'string'
+    ? options.customSoundPath.trim()
+    : '';
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     YUYU_TOAST_APP_ID: DSH_APP_ID,
@@ -126,6 +157,7 @@ export function sendDesktopNotification(
     YUYU_TOAST_LINE2: lines[1] || '',
     YUYU_TOAST_LINE3: lines[2] || '',
     YUYU_TOAST_SOUND: soundName,
+    YUYU_CUSTOM_SOUND_PATH: customSound,
     YUYU_TOAST_LAUNCH: String(options.launch || 'dsh://open').slice(0, 200)
   };
 
@@ -156,8 +188,13 @@ export function sendDesktopNotification(
 }
 
 /** 只发声、不弹通知；用于“通知被节流时至少给个声音反馈”或测试音效。 */
-export function playSystemAlertSound(): Promise<boolean> {
+export function playSystemAlertSound(customSoundPath?: string): Promise<boolean> {
   if (process.platform !== 'win32') return Promise.resolve(false);
+  const customSound = customSoundPath && typeof customSoundPath === 'string' ? customSoundPath.trim() : '';
+  const cmd = customSound
+    ? `$p = $env:YUYU_PLAY_SOUND; if (Test-Path $p) { if ($p -match '\\.wav$') { (New-Object System.Media.SoundPlayer $p).PlaySync() } else { Add-Type -AssemblyName presentationCore; $m = New-Object System.Windows.Media.MediaPlayer; $m.Open([Uri]$p); $m.Play(); Start-Sleep -Milliseconds 800 } }`
+    : "$wav = Join-Path $env:WINDIR 'Media\\Windows Notify.wav'; if (Test-Path $wav) { (New-Object System.Media.SoundPlayer $wav).PlaySync() }";
+
   return new Promise((resolve) => {
     try {
       execFile(
@@ -168,9 +205,9 @@ export function playSystemAlertSound(): Promise<boolean> {
           '-WindowStyle',
           'Hidden',
           '-Command',
-          "$wav = Join-Path $env:WINDIR 'Media\\Windows Notify.wav'; if (Test-Path $wav) { (New-Object System.Media.SoundPlayer $wav).PlaySync() }"
+          cmd
         ],
-        { windowsHide: true, timeout: 10_000 },
+        { windowsHide: true, timeout: 10_000, env: { ...process.env, YUYU_PLAY_SOUND: customSound } },
         (error) => resolve(!error)
       );
     } catch {

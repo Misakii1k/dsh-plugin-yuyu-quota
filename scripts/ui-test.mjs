@@ -249,11 +249,14 @@ console.log('[ui-test] 8) 设置视图在一屏内放得下');
     const required = [
       '#yuyu-theme-tabs', '#yuyu-style-tabs', '#yuyu-whale-model',
       '#yuyu-interval-tabs', '#yuyu-notify-mode', '#yuyu-sound-effect',
-      '#yuyu-press-sound', '#yuyu-update-check', '#yuyu-version-label',
+      '#yuyu-press-sound', '#yuyu-sound-test', '#yuyu-press-test',
+      '#yuyu-notify-test', '#yuyu-update-check', '#yuyu-version-label',
       '#yuyu-open-tutorial-btn', '#yuyu-notify-switch'
     ];
     const missing = required.filter((sel) => !container.querySelector(sel));
     check('设置项一个不少', missing.length === 0, `缺失: ${missing.join(', ')}`);
+    const modelOpts = container.querySelectorAll('#yuyu-whale-model option');
+    check('立绘仅保留经典款 1 个选项', modelOpts.length === 1 && modelOpts[0].value === 'DSniang1');
   }
 }
 
