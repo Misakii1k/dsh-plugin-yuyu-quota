@@ -1,0 +1,375 @@
+import { YuyuApiClient } from './api.js';
+
+/**
+ * 鱼鱼API 的凭据续期。
+ *
+ * 背景（实测于 sub.anzhiyu.com 线上接口）：
+ * - access token（网页 localStorage 里的 `auth_token`）是 JWT，有效期约 24 小时；
+ *   过期后所有 /api/v1 请求返回 401 —— 这就是「1~2 天就要重新获取 Token」的原因。
+ * - 网页端同时还存了 `refresh_token`（`rt_` + 64 hex）与 `token_expires_at`；
+ *   调用 `POST /api/v1/auth/refresh { refresh_token }` 会返回新的
+ *   `{ access_token, refresh_token, expires_in }`。
+ * - **刷新会轮换 refresh token**：同一枚 refresh token 只能用一次，用第二次返回
+ *   `401 REFRESH_TOKEN_INVALID`。因此写回必须是原子的，且必须留住新的 rt_。
+ *
+ * 本模块做的事：
+ * 1. 记住每个账号的 refresh token，临近过期前主动续期；
+ * 2. 遇到 401 时被动续期一次再重试；
+ * 3. 续期失败则回落到「重新扫描浏览器」，拿到网页端最新写入的凭据；
+ * 4. 全程把新 refresh token 持久化，实现尽可能长久的免重新登录。
+ */
+
+export interface RefreshCredentials {
+  accessToken: string;
+  refreshToken: string;
+  /** access token 过期时刻（ms），由 expires_in 或 JWT 的 exp 推导 */
+  accessTokenExpiresAt?: number;
+  /** refresh token 过期时刻（ms），未知则 undefined */
+  refreshTokenExpiresAt?: number;
+}
+
+export interface RefreshAttemptResult {
+  ok: boolean;
+  credentials?: RefreshCredentials;
+  /** 失败原因分类，供上层决定是否回落浏览器扫描 */
+  reason?: 'invalid' | 'network' | 'server' | 'empty';
+  message?: string;
+}
+
+const DEFAULT_BASE_URL = 'https://sub.anzhiyu.com';
+
+/** 把 JWT 的 exp 解析成毫秒时间戳 */
+export function jwtExpiry(token: string): number | undefined {
+  try {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 3) return undefined;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (typeof payload?.exp !== 'number') return undefined;
+    return payload.exp * 1000;
+  } catch {
+    return undefined;
+  }
+}
+
+/** JWT 是否已过期（带 skew 容差，默认提前 60 秒视为过期） */
+export function isTokenExpired(token: string, skewMs = 60_000): boolean {
+  const exp = jwtExpiry(token);
+  if (!exp) return true;
+  return exp - skewMs <= Date.now();
+}
+
+/**
+ * 用 refresh token 换一对新凭据。
+ *
+ * 注意：**不要并发调用**。refresh token 是一次性的，两个并发请求会有一个必定失败，
+ * 甚至可能让服务端作废整条会话链。上层（YuyuCredentials）已做串行化。
+ */
+export async function refreshWithToken(
+  refreshToken: string,
+  baseUrl: string = DEFAULT_BASE_URL,
+  timeoutMs = 12_000
+): Promise<RefreshAttemptResult> {
+  const rt = String(refreshToken || '').trim();
+  if (!/^rt_[0-9a-f]{16,}$/i.test(rt)) {
+    return { ok: false, reason: 'empty', message: '没有可用的 refresh token' };
+  }
+
+  const base = String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${base}/api/v1/auth/refresh`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'DSH-Plugin-Yuyu-Quota/1.2.0'
+      },
+      body: JSON.stringify({ refresh_token: rt })
+    });
+
+    if (response.status === 401 || response.status === 400) {
+      return { ok: false, reason: 'invalid', message: 'refresh token 已失效' };
+    }
+    if (!response.ok) {
+      return { ok: false, reason: 'server', message: `刷新接口返回 HTTP ${response.status}` };
+    }
+
+    const json = await response.json() as any;
+    if (json?.code !== undefined && json.code !== 0) {
+      const invalid = /REFRESH_TOKEN_INVALID|invalid refresh token/i.test(String(json.message || ''));
+      return {
+        ok: false,
+        reason: invalid ? 'invalid' : 'server',
+        message: json.message || `刷新失败（code=${json.code}）`
+      };
+    }
+
+    const data = json?.data || json;
+    const accessToken = String(data?.access_token || '').trim();
+    if (!accessToken) {
+      return { ok: false, reason: 'server', message: '刷新响应缺少 access_token' };
+    }
+
+    const expiresIn = Number(data?.expires_in);
+    const accessTokenExpiresAt = Number.isFinite(expiresIn) && expiresIn > 0
+      ? Date.now() + expiresIn * 1000
+      : jwtExpiry(accessToken);
+
+    // 服务端通常会轮换 refresh token；没给就继续用旧的
+    const nextRefresh = String(data?.refresh_token || '').trim() || rt;
+    const refreshExpiresRaw = Number(data?.refresh_token_expires_at);
+    const refreshTokenExpiresAt = Number.isFinite(refreshExpiresRaw) && refreshExpiresRaw > 0
+      ? (refreshExpiresRaw > 1e12 ? refreshExpiresRaw : refreshExpiresRaw * 1000)
+      : undefined;
+
+    return {
+      ok: true,
+      credentials: {
+        accessToken,
+        refreshToken: nextRefresh,
+        accessTokenExpiresAt,
+        refreshTokenExpiresAt
+      }
+    };
+  } catch (err: any) {
+    const aborted = err?.name === 'AbortError';
+    return {
+      ok: false,
+      reason: 'network',
+      message: aborted ? '刷新请求超时' : (err?.message || String(err))
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 管理器内部读写凭据时用的形状（与 types.ts 的 AccountCredentials 结构一致） */
+export interface StoredCredentials {
+  email: string;
+  accessToken: string;
+  refreshToken?: string;
+  accessTokenExpiresAt?: number;
+  refreshTokenExpiresAt?: number;
+}
+
+export interface CredentialManagerHooks {
+  /** 读取账号当前凭据 */
+  get: (email: string) => StoredCredentials | undefined;
+  /** 写回续期后的凭据（必须持久化） */
+  set: (credentials: StoredCredentials) => void;
+  /** 续期彻底失败时的兜底：重新去浏览器捞一份 */
+  recoverFromBrowser?: () => Promise<StoredCredentials | null>;
+  logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
+}
+
+/**
+ * 判断一个错误/失败快照是否表示「凭据无效」。
+ *
+ * 优先看结构化字段（YuyuApiError.status / snapshot.unauthorized），
+ * 只有拿不到结构化信息时才回退到文本匹配 —— 依赖错误文案是最脆弱的判断方式。
+ */
+export function isUnauthorizedLike(err: any): boolean {
+  if (!err) return false;
+  // 快照对象（getBalanceSnapshot 的返回值）
+  if (err.unauthorized === true) return true;
+  if (typeof err.errorStatus === 'number' && (err.errorStatus === 401 || err.errorStatus === 403)) return true;
+  // 异常对象（YuyuApiError 或普通 Error）
+  if (typeof err.status === 'number' && (err.status === 401 || err.status === 403)) return true;
+  if (err.isUnauthorized === true) return true;
+  // 兜底：文本匹配（保持与历史行为兼容，但放最后）
+  const text = String(err.message || err.error || err || '');
+  return /401|403|未授权|已失效|unauthorized/i.test(text);
+}
+
+/**
+ * 凭据管理器：把「何时续期、如何串行、失败怎么办」收敛到一处。
+ *
+ * 为什么需要串行：refresh token 一次性，重复使用会让会话失效。
+ * 同一账号同时最多只有一个刷新在飞，其余调用共享同一个 Promise。
+ */
+export function createCredentialManager(hooks: CredentialManagerHooks, baseUrl = DEFAULT_BASE_URL) {
+  const inflight = new Map<string, Promise<StoredCredentials | null>>();
+  /** 续期成功但还没来得及验证的时刻，避免短时间反复刷 */
+  const lastRefreshAt = new Map<string, number>();
+  const REFRESH_COOLDOWN_MS = 30_000;
+
+  const log = (level: 'info' | 'warn', message: string) => {
+    try {
+      hooks.logger?.[level]?.(message);
+    } catch {
+      // 日志失败不影响主流程
+    }
+  };
+
+  /**
+   * 在真正需要时才续期。返回可用的 access token；无法续期返回 null。
+   */
+  async function ensureFresh(email: string, force = false): Promise<string | null> {
+    const current = hooks.get(email);
+    if (!current?.accessToken) {
+      return await doRefresh(email, 'missing-token');
+    }
+
+    const expiresAt = current.accessTokenExpiresAt || jwtExpiry(current.accessToken);
+    const now = Date.now();
+    // 提前 5 分钟续期，避免「刚好在请求中途过期」
+    const refreshAheadMs = 5 * 60 * 1000;
+
+    if (!force && expiresAt && expiresAt - refreshAheadMs > now) {
+      return current.accessToken;
+    }
+    if (!force && !expiresAt) {
+      // 解析不出 exp 的 token 直接尝试用，401 时再被动续期
+      return current.accessToken;
+    }
+
+    const recent = lastRefreshAt.get(email) || 0;
+    if (!force && now - recent < REFRESH_COOLDOWN_MS) {
+      // 刚刷过还在冷却期：把当前 token 交出去，让 401 路径兜底
+      return current.accessToken;
+    }
+
+    return await doRefresh(email, 'expiring');
+  }
+
+  async function doRefresh(email: string, trigger: string): Promise<string | null> {
+    const existing = inflight.get(email);
+    if (existing) {
+      const shared = await existing;
+      return shared?.accessToken || null;
+    }
+
+    const task = (async (): Promise<StoredCredentials | null> => {
+      const current = hooks.get(email);
+      const rt = current?.refreshToken;
+
+      if (!rt) {
+        log('warn', `[鱼鱼API] ${email} 没有 refresh token，尝试从浏览器恢复凭据`);
+        return await recover(email);
+      }
+
+      const result = await refreshWithToken(rt, baseUrl);
+      if (result.ok && result.credentials) {
+        const next: StoredCredentials = {
+          email,
+          accessToken: result.credentials.accessToken,
+          refreshToken: result.credentials.refreshToken,
+          accessTokenExpiresAt: result.credentials.accessTokenExpiresAt,
+          refreshTokenExpiresAt: result.credentials.refreshTokenExpiresAt
+        };
+        hooks.set(next);
+        lastRefreshAt.set(email, Date.now());
+        const hours = next.accessTokenExpiresAt
+          ? ((next.accessTokenExpiresAt - Date.now()) / 3_600_000).toFixed(1)
+          : '?';
+        log('info', `[鱼鱼API] ${email} 凭据已自动续期（触发=${trigger}，新 token 有效期约 ${hours} 小时）`);
+        return next;
+      }
+
+      log('warn', `[鱼鱼API] ${email} 续期失败（${result.reason}: ${result.message}），尝试从浏览器恢复`);
+      // invalid 表示这条会话链已废，必须换一份；network/server 也顺手试一下浏览器
+      return await recover(email);
+    })()
+      .catch((err: any) => {
+        log('warn', `[鱼鱼API] 续期异常: ${err?.message || String(err)}`);
+        return null;
+      })
+      .finally(() => {
+        inflight.delete(email);
+      });
+
+    inflight.set(email, task);
+    const done = await task;
+    return done?.accessToken || null;
+  }
+
+  async function recover(email: string): Promise<StoredCredentials | null> {
+    if (!hooks.recoverFromBrowser) return null;
+    try {
+      const found = await hooks.recoverFromBrowser();
+      if (!found || !found.accessToken) return null;
+      // 只接受同一账号的凭据，避免把 A 账号的 token 写到 B 上
+      if (found.email && email && found.email !== email) {
+        log('warn', `[鱼鱼API] 浏览器里最新登录的是 ${found.email}，与 ${email} 不一致，未覆盖`);
+        return null;
+      }
+      hooks.set(found);
+      lastRefreshAt.set(email, Date.now());
+      log('info', `[鱼鱼API] 已从浏览器恢复 ${email} 的凭据`);
+      return found;
+    } catch (err: any) {
+      log('warn', `[鱼鱼API] 浏览器恢复失败: ${err?.message || String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * 带自动续期的请求包装：401 时强制续期并重试一次。
+   *
+   * 注意：`run` 返回的可能是「失败的快照对象」而不是抛错
+   * （getBalanceSnapshot 就是如此）。所以除了 catch，
+   * 还要检查返回值的 unauthorized 标记 —— 否则凭据失效时永远不会续期。
+   */
+  async function withRetry<T>(email: string, run: (token: string) => Promise<T>): Promise<T> {
+    let token = await ensureFresh(email);
+    if (!token) {
+      const current = hooks.get(email);
+      token = current?.accessToken || '';
+    }
+    if (!token) {
+      throw new Error('没有可用的登录凭据，请在浏览器登录 sub.anzhiyu.com 后点击「从浏览器同步」');
+    }
+
+    const shouldRefreshAndRetry = (value: any) => isUnauthorizedLike(value);
+
+    try {
+      const result = await run(token);
+      // 失败快照：凭据无效时同样要走续期
+      if (shouldRefreshAndRetry(result)) {
+        log('warn', `[鱼鱼API] ${email} 返回未授权结果，强制续期后重试`);
+        const refreshed = await doRefresh(email, 'unauthorized-result');
+        if (refreshed) return await run(refreshed);
+      }
+      return result;
+    } catch (err: any) {
+      if (!isUnauthorizedLike(err)) throw err;
+
+      log('warn', `[鱼鱼API] ${email} 收到未授权错误，强制续期后重试`);
+      const refreshed = await doRefresh(email, '401');
+      if (!refreshed) throw err;
+      return await run(refreshed);
+    }
+  }
+
+  /** 主动预热：启动时把所有账号的凭据都续到新鲜状态 */
+  async function warmUp(emails: string[]): Promise<void> {
+    for (const email of emails) {
+      try {
+        await ensureFresh(email);
+      } catch {
+        // 单个账号失败不影响其他账号
+      }
+    }
+  }
+
+  return {
+    ensureFresh,
+    withRetry,
+    warmUp,
+    /** 供测试/诊断：当前是否有刷新在飞 */
+    isRefreshing: (email: string) => inflight.has(email)
+  };
+}
+
+export type CredentialManager = ReturnType<typeof createCredentialManager>;
+
+/**
+ * 让 YuyuApiClient 在每次请求前自动带最新 token。
+ * 不改变 YuyuApiClient 的既有 API，避免影响其他调用点。
+ */
+export function applyTokenToClient(client: YuyuApiClient, token: string) {
+  client.updateToken(token);
+}

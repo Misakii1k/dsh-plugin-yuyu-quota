@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PluginPreferences, UpdateInfo } from './types.js';
 
@@ -165,7 +166,12 @@ function normalizeRelease(data: any, currentVersion: string, repo: string, sourc
     data.releaseUrl || data.html_url || data.htmlUrl || data.pageUrl
       || (repo ? `https://github.com/${repo}/releases` : '')
   );
-  const rawDownload = data.downloadUrl || data.tarball || data.tarball_url || pickReleaseAsset(data.assets) || '';
+  // 下载地址优先级：显式配置 > **插件 tgz 资产** > 其它。
+  // 不能把 tarball / tarball_url 放在资产前面：GitHub Release JSON 一定含
+  // tarball_url（源码包），那样会下载到源码 tar 而不是插件 tgz，
+  // 且 size/sha256 取的是 release asset 的，必然校验失败。
+  const assetUrl = pickReleaseAsset(data.assets);
+  const rawDownload = data.downloadUrl || assetUrl || data.tarball || data.tarball_url || '';
   const downloadUrl = resolveDownloadUrl(rawDownload, feedUrl) || String(rawDownload || '');
   const notes = String(data.notes || data.body || data.changelog || '').slice(0, 1500);
   const publishedAt = data.publishedAt || data.published_at || data.created_at || '';
@@ -408,28 +414,86 @@ export async function downloadUpdate(
   }
 }
 
+/** 列出 tgz 里的条目名（tar -tzf），用于在解压前做安全校验 */
+function listArchiveEntries(tgzFilePath: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    execFile('tar.exe', ['-tzf', tgzFilePath], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(String(stdout || '').split(/\r?\n/).filter(Boolean));
+    });
+  });
+}
+
+/**
+ * 校验压缩包里的路径全部安全。
+ *
+ * 为什么必须校验：安装流程会把远端下载的 tgz 解压到插件目录，
+ * 若包里带 `../../` 或绝对路径，就能写到任意位置（Zip-Slip）。
+ * 即使包来自我们自己的发布流程，也要按不可信输入处理。
+ */
+export function isSafeArchivePath(entry: string): boolean {
+  if (!entry) return false;
+  // 去掉 tar 的 ./ 前缀后判断
+  const normalized = entry.replace(/^\.\//, '');
+  if (!normalized) return true; // 目录条目 "./" 无害
+  if (normalized.startsWith('/') || normalized.startsWith('\\')) return false;
+  if (/^[A-Za-z]:/.test(normalized)) return false;
+  const segments = normalized.split(/[\\/]/);
+  if (segments.some((seg) => seg === '..')) return false;
+  // 拒绝软链接常见的目标写法里带协议（如 http://）这类异常条目
+  if (/^[a-z]+:\/\//i.test(normalized)) return false;
+  return true;
+}
+
 /**
  * 自动解压并安装新版本到 DSH 本地插件目录。
  */
 export async function installUpdate(tgzFilePath: string): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const userHome = os.homedir();
-    const targetDir = path.join(userHome, '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-plugin-yuyu-quota');
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
+  const { execFile: execFileCb } = await import('node:child_process');
 
-    const { execFile } = await import('node:child_process');
+  // 0) 先确认压缩包在预期目录内，避免被诱导解压任意文件
+  const expectedDir = path.join(os.tmpdir(), 'dsh-yuyu-update');
+  const resolvedFile = path.resolve(tgzFilePath);
+  if (!resolvedFile.toLowerCase().startsWith(path.resolve(expectedDir).toLowerCase() + path.sep)) {
+    return { ok: false, error: '安装包路径不在允许的下载目录内，已拒绝安装' };
+  }
+  if (!fs.existsSync(resolvedFile)) {
+    return { ok: false, error: '安装包不存在' };
+  }
+
+  // 1) 解压前做 Zip-Slip 校验
+  let entries: string[] = [];
+  try {
+    entries = await listArchiveEntries(resolvedFile);
+  } catch (err: any) {
+    return { ok: false, error: `读取安装包清单失败: ${err?.message || err}` };
+  }
+  if (entries.length === 0) {
+    return { ok: false, error: '安装包为空' };
+  }
+  const unsafe = entries.filter((entry) => !isSafeArchivePath(entry));
+  if (unsafe.length > 0) {
+    return { ok: false, error: `安装包包含非法路径，已拒绝安装: ${unsafe.slice(0, 3).join(', ')}` };
+  }
+  if (!entries.some((entry) => /(^|\/)package\.json$/.test(entry.replace(/^\.\//, '')))) {
+    return { ok: false, error: '安装包缺少 package.json，无法确认是插件包' };
+  }
+
+  try {
+    const targetDir = path.join(os.homedir(), '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-plugin-yuyu-quota');
+    fs.mkdirSync(targetDir, { recursive: true });
+
     await new Promise<void>((resolve, reject) => {
-      execFile('tar.exe', ['-xzf', tgzFilePath, '-C', targetDir, '--strip-components', '1'], (err) => {
+      execFileCb('tar.exe', ['-xzf', resolvedFile, '-C', targetDir, '--strip-components', '1'], (err) => {
         if (err) reject(err);
         else resolve();
       });
     });
 
+    // dsh CLI 注册（失败不致命：文件已经落地，重启后仍会被加载）
     try {
       await new Promise<void>((resolve) => {
-        execFile('dsh', ['plugin', '--profile', 'desktop', 'add', tgzFilePath], () => resolve());
+        execFileCb('dsh', ['plugin', '--profile', 'desktop', 'add', resolvedFile], () => resolve());
       });
     } catch {}
 

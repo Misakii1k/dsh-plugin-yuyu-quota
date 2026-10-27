@@ -41,6 +41,14 @@ export interface DownloadUpdateOptions {
  */
 export declare function downloadUpdate(info: UpdateInfo, options?: DownloadUpdateOptions): Promise<DownloadResult>;
 /**
+ * 校验压缩包里的路径全部安全。
+ *
+ * 为什么必须校验：安装流程会把远端下载的 tgz 解压到插件目录，
+ * 若包里带 `../../` 或绝对路径，就能写到任意位置（Zip-Slip）。
+ * 即使包来自我们自己的发布流程，也要按不可信输入处理。
+ */
+export declare function isSafeArchivePath(entry: string): boolean;
+/**
  * 自动解压并安装新版本到 DSH 本地插件目录。
  */
 export declare function installUpdate(tgzFilePath: string): Promise<{

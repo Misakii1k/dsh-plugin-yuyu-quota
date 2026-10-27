@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-yuyu-quota",
-  "version": "1.1.1",
-  "description": "DeepSeek-Harness 插件：实时监控鱼鱼API (sub.anzhiyu.com) 多账号余额与额度，并在每轮对话结束后用 Windows 原生通知汇报本轮 Token 与实扣额度（零MCP依赖，可拖动浮窗，支持 GitHub + Cloudflare 云端版本推送）",
+  "version": "1.2.1",
+  "description": "DeepSeek-Harness 插件：实时监控鱼鱼API (sub.anzhiyu.com) 多账号余额与额度，支持小鲸鱼立绘Q弹挂件与极简胶囊双模式，凭据自动续期免重复登录，暗色模式，内置提示音效与SVG大对话泡泡，充值一键跳转",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -16,6 +16,7 @@
   },
   "files": [
     "lib",
+    "assets",
     "cordis.patch.yml",
     "tutorial.html",
     "一键配置.bat",
@@ -39,12 +40,18 @@
     "build": "node scripts/build.mjs",
     "watch": "tsc -w",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/build.mjs && node scripts/smoke-test.mjs && node scripts/cf-functions-test.mjs",
+    "test": "node scripts/build.mjs && node scripts/smoke-test.mjs && node scripts/credentials-test.mjs && node scripts/browser-scan-test.mjs && node scripts/ui-test.mjs && node scripts/perf-test.mjs && node scripts/cf-functions-test.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
+    "test:credentials": "node scripts/credentials-test.mjs",
+    "test:browser": "node scripts/browser-scan-test.mjs",
+    "test:ui": "node scripts/ui-test.mjs",
+    "test:perf": "node scripts/perf-test.mjs",
+    "test:perf-browser": "node scripts/perf-browser.mjs",
     "test:cf": "node scripts/cf-functions-test.mjs",
     "pack": "node scripts/pack.mjs",
     "gen-version": "node scripts/gen-version.mjs",
-    "test:query": "node test-fetch.mjs"
+    "test:query": "node test-fetch.mjs",
+    "test:e2e": "node scripts/e2e-live.mjs"
   },
   "keywords": [
     "deepseek-harness",
@@ -62,6 +69,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.3.3"
   }
 }

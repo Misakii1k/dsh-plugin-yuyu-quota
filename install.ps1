@@ -1,4 +1,4 @@
-﻿# 鱼鱼API - DeepSeek Harness 插件跨机器自适应极速安装脚本
+# 鱼鱼API - DeepSeek Harness 插件跨机器自适应极速安装脚本
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -146,13 +146,14 @@ if (-not $installSuccess) {
     }
     
     $jsonContent = $pkg | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText($pkgPath, $jsonContent, [System.Text.Encoding]::UTF8)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($pkgPath, $jsonContent, $utf8NoBom)
     
     # 自动补充 cordis.patch.yml
     $patchPath = Join-Path $desktopDir "cordis.patch.yml"
     if (-not (Test-Path $patchPath)) {
         $patchContent = "patch:`r`n  dsh-plugin-yuyu-quota:`r`n    `$enabled: true`r`n"
-        [System.IO.File]::WriteAllText($patchPath, $patchContent, [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText($patchPath, $patchContent, $utf8NoBom)
     }
     
     $installSuccess = $true

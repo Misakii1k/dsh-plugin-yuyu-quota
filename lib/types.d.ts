@@ -72,8 +72,41 @@ export interface BalanceSnapshot {
     alertThreshold: number;
     formattedText: string;
     error?: string;
+    /** 结构化标记：本次失败是否为凭据无效（可尝试 refresh 续期） */
+    unauthorized?: boolean;
+    /** 失败时的 HTTP 状态码 */
+    errorStatus?: number;
 }
 export type RefreshInterval = '1s' | '5s' | '30s' | '1m' | '5m';
+/**
+ * 账号凭据。
+ *
+ * 鱼鱼API 的 access token 约 24 小时过期，靠 refresh token 续期；
+ * refresh token 是一次性的（用过即轮换），所以每次续期后都**必须**写回。
+ */
+export interface AccountCredentials {
+    email: string;
+    accessToken: string;
+    refreshToken?: string;
+    /** access token 过期时刻（ms） */
+    accessTokenExpiresAt?: number;
+    /** refresh token 过期时刻（ms），未知则缺省 */
+    refreshTokenExpiresAt?: number;
+    /** 最近一次成功续期的时刻（ms） */
+    refreshedAt?: number;
+}
+/** 凭据健康状态，用于前端展示「还能撑多久」 */
+export interface CredentialHealth {
+    email: string;
+    hasRefreshToken: boolean;
+    accessTokenExpiresAt?: number;
+    refreshTokenExpiresAt?: number;
+    /** 距 access token 过期还剩多少毫秒（负数表示已过期） */
+    msUntilExpiry?: number;
+    /** auto = 有 refresh token，可自动续期；manual = 需要重新登录 */
+    mode: 'auto' | 'manual';
+    lastRefreshedAt?: number;
+}
 /** 一轮会话中由 DSH 上报的 Token 明细 */
 export interface TokenUsageTotals {
     /** 未命中缓存的输入 Token */
@@ -126,8 +159,26 @@ export interface WidgetPosition {
     y: number;
     edge: 'left' | 'right' | 'free';
 }
+export type NotifyMode = 'both' | 'windows' | 'inapp' | 'off';
+export type AppTheme = 'system' | 'light' | 'dark';
+export type WidgetStyle = 'whale' | 'pill';
+export type WhaleModel = 'DSniang1' | 'DSniang02' | 'DSH2';
 /** 用户偏好（持久化在 yuyu-config.json） */
 export interface PluginPreferences {
+    /** 外观主题：'system' 跟随系统 | 'light' 浅色 | 'dark' 深色 */
+    theme?: AppTheme;
+    /** 挂件样式：'whale' 小鲸鱼立绘Q弹 | 'pill' 极简胶囊 */
+    widgetStyle?: WidgetStyle;
+    /** 小鲸鱼形象立绘 */
+    whaleModel?: WhaleModel;
+    /** 任务完成播放的音效名 */
+    soundEffect?: string;
+    /** 按压Q弹音效 */
+    pressSound?: string;
+    /** 提示音量 0-100 */
+    soundVolume?: number;
+    /** 通知提醒模式：'both' 两者均启动 | 'windows' 仅Windows通知 | 'inapp' 仅应用内气泡 | 'off' 关闭 */
+    notifyMode?: NotifyMode;
     /** 会话任务完成后弹 Windows 原生通知 */
     notifyOnComplete: boolean;
     /** 通知音：Windows 官方音效名，或 'none' 表示静音 */

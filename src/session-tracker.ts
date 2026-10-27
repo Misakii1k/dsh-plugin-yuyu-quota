@@ -159,13 +159,35 @@ export function createSessionTracker(hooks: SessionTrackerHooks) {
     }
   };
 
+/** 超过这个时间没有事件的「进行中轮次」视为卡死（缺 turn/end 时不会自己结束） */
+const STALE_TURN_MS = 30 * 60 * 1000;
+
+  /**
+   * 清理会话表。
+   *
+   * 旧实现只在 `!state.turn` 时才删除：如果某些会话一直卡在「轮次进行中」
+   * （例如 turn/end 丢失），Map 会无上限增长，而且 isAgentRunning() 永远返回 true，
+   * 让「检测到 Agent 正在运行，请稍后重启」这类提示一直挂着。
+   * 现在对超时未结束的轮次做兜底清理。
+   */
   function pruneSessions() {
+    const now = Date.now();
+    // 1) 先回收「长时间没有任何事件」的轮次，允许后续被删除
+    for (const [, state] of sessions) {
+      if (state.turn && now - state.lastEventAt > STALE_TURN_MS) {
+        state.turn = null;
+      }
+    }
     if (sessions.size <= SESSION_LIMIT) return;
     const sorted = [...sessions.entries()].sort((a, b) => a[1].lastEventAt - b[1].lastEventAt);
     const removeCount = sorted.length - Math.floor(SESSION_LIMIT * 0.8);
-    for (let index = 0; index < removeCount; index += 1) {
+    let removed = 0;
+    for (let index = 0; index < sorted.length && removed < removeCount; index += 1) {
       const state = sorted[index][1];
-      if (!state.turn) sessions.delete(sorted[index][0]);
+      if (!state.turn) {
+        sessions.delete(sorted[index][0]);
+        removed += 1;
+      }
     }
   }
 
@@ -402,8 +424,10 @@ export function createSessionTracker(hooks: SessionTrackerHooks) {
   /** 判断当前是否有任何会话正在执行 Turn（即 Agent 运行中） */
   function isAgentRunning(): boolean {
     if (disposed) return false;
+    const now = Date.now();
     for (const state of sessions.values()) {
-      if (state.turn !== null) return true;
+      // 卡死的轮次不应让「Agent 正在运行」永久为真
+      if (state.turn && now - state.lastEventAt <= STALE_TURN_MS) return true;
     }
     return false;
   }

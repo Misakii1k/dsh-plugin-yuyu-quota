@@ -17,3 +17,7 @@ public/version.json
 
 # 发版备份目录（本地回滚用）
 .backup-yuyu-*/
+
+# 临时诊断脚本：历史上曾在这里写过真实 refresh token / access token，
+# 一旦被 git add -A 带上就会把本机会话凭据推到公开仓库。
+scripts/_*

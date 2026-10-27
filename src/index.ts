@@ -2,16 +2,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { YuyuApiClient } from './api.js';
 import { createYuyuBalanceTool } from './tool.js';
-import { renderWidgetHtml, ICONS } from './widget.js';
-import { scanRunningBrowsersForToken, launchAndCaptureToken } from './browser-sync.js';
-import { PluginConfig, BalanceSnapshot, RefreshInterval, PluginPreferences, TurnUsageReport, UpdateInfo, WidgetPosition } from './types.js';
+import { scanRunningBrowsersForToken, launchAndCaptureToken, openExternal } from './browser-sync.js';
+import { PluginConfig, BalanceSnapshot, RefreshInterval, PluginPreferences, TurnUsageReport, UpdateInfo, WidgetPosition, CredentialHealth } from './types.js';
 import { createSessionTracker } from './session-tracker.js';
 import { sendDesktopNotification, playSystemAlertSound, NotifySound } from './notify.js';
 import { checkForUpdate, downloadUpdate, installUpdate, getPluginVersion } from './update.js';
+import { createCredentialManager, jwtExpiry, isUnauthorizedLike, refreshWithToken } from './credentials.js';
 
 export const name = 'dsh-plugin-yuyu-quota';
 /**
@@ -42,6 +42,14 @@ export interface SavedAccount {
   balanceChangedAt?: string;
   /** 上一次观察到的 total_recharged，用于识别充值到账 */
   lastTotalRecharged?: number;
+  /** refresh token（rt_xxx），用于 access token 过期后自动续期 */
+  refreshToken?: string;
+  /** access token 过期时刻（ms） */
+  accessTokenExpiresAt?: number;
+  /** refresh token 过期时刻（ms） */
+  refreshTokenExpiresAt?: number;
+  /** 最近一次成功续期的时刻（ms） */
+  refreshedAt?: number;
 }
 
 export interface MultiAccountStore {
@@ -53,6 +61,8 @@ export interface MultiAccountStore {
   accounts: SavedAccount[];
   /** 通知 / 汇报 / 更新 / 浮窗等用户偏好 */
   preferences: PluginPreferences;
+  /** 是否需要提示用户「凭据无法自动续期」 */
+  credentialsDegraded?: boolean;
 }
 
 let currentUpdateProgress: { status: string; loaded: number; total: number; percent: number } | null = null;
@@ -60,6 +70,13 @@ let currentUpdateProgress: { status: string; loaded: number; total: number; perc
 /** 用户偏好的出厂默认值 */
 export function defaultPreferences(): PluginPreferences {
   return {
+    theme: 'system',
+    widgetStyle: 'whale',
+    whaleModel: 'DSniang1',
+    soundEffect: 'task-end-a',
+    pressSound: 'duck',
+    soundVolume: 80,
+    notifyMode: 'both',
     notifyOnComplete: true,
     notifySound: 'Notification.Reminder',
     notifySubagentMute: true,
@@ -102,6 +119,38 @@ export function sanitizePreferences(input: any, base: PluginPreferences): Plugin
     if (typeof input[key] === 'boolean') {
       (next as any)[key] = input[key];
     }
+  }
+
+  if (input.theme === 'system' || input.theme === 'light' || input.theme === 'dark') {
+    next.theme = input.theme;
+  }
+
+  if (input.widgetStyle === 'whale' || input.widgetStyle === 'pill') {
+    next.widgetStyle = input.widgetStyle;
+  }
+
+  if (input.whaleModel === 'DSniang1' || input.whaleModel === 'DSniang02' || input.whaleModel === 'DSH2') {
+    next.whaleModel = input.whaleModel;
+  }
+
+  if (typeof input.soundEffect === 'string') {
+    next.soundEffect = input.soundEffect.trim();
+  }
+
+  if (typeof input.pressSound === 'string') {
+    next.pressSound = input.pressSound.trim();
+  }
+
+  if (typeof input.soundVolume === 'number') {
+    next.soundVolume = Math.max(0, Math.min(100, input.soundVolume));
+  }
+
+  if (input.notifyMode === 'both' || input.notifyMode === 'windows' || input.notifyMode === 'inapp' || input.notifyMode === 'off') {
+    next.notifyMode = input.notifyMode;
+    next.notifyOnComplete = input.notifyMode === 'both' || input.notifyMode === 'windows';
+  } else if (input.notifyOnComplete !== undefined) {
+    // 兼容历史版本布尔值
+    next.notifyMode = input.notifyOnComplete ? 'both' : 'off';
   }
 
   if (typeof input.notifySound === 'string') {
@@ -178,6 +227,18 @@ export function loadAccountStore(): MultiAccountStore {
         store.lastBrowserIat = raw.lastBrowserIat;
       }
 
+      // 这三个字段 saveAccountStore 一直在写，早期版本却忘了读回来 ——
+      // 结果用户设置的刷新频率/预警阈值/服务地址重启就丢，永远回到默认值。
+      if (typeof raw.refreshInterval === 'string' && INTERVAL_MAP[raw.refreshInterval as RefreshInterval]) {
+        store.refreshInterval = raw.refreshInterval as RefreshInterval;
+      }
+      if (typeof raw.alertThreshold === 'number' && Number.isFinite(raw.alertThreshold)) {
+        store.alertThreshold = Math.max(0, Math.min(1000, raw.alertThreshold));
+      }
+      if (typeof raw.baseUrl === 'string' && /^https?:\/\/[^\s]+$/i.test(raw.baseUrl.trim())) {
+        store.baseUrl = raw.baseUrl.trim().replace(/\/+$/, '');
+      }
+
       if (raw.preferences && typeof raw.preferences === 'object') {
         store.preferences = sanitizePreferences(raw.preferences, store.preferences);
       }
@@ -207,6 +268,30 @@ export function loadAccountStore(): MultiAccountStore {
   return store;
 }
 
+/**
+ * 原子写入：先写临时文件再 rename。
+ *
+ * 为什么必须原子：refresh token 是一次性的（用过即轮换）。如果写盘写到一半崩溃，
+ * 或两个进程同时写，就会永久丢掉唯一可用的 refresh token —— 用户只能重新登录。
+ * rename 在同一分区上是原子的，能保证「要么旧内容，要么新内容」。
+ */
+function writeFileAtomic(target: string, content: string): boolean {
+  const dir = path.dirname(target);
+  const tmp = path.join(dir, `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(tmp, content, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, target);
+    return true;
+  } catch {
+    // 不能退化成「直接覆盖」：那样会破坏原子性 ——
+    // 写到一半崩溃就会留下半截 JSON，连带丢掉唯一的 refresh token。
+    // 这里只清理临时文件并返回失败，让调用方决定是否重试。
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
+  }
+}
+
 export function saveAccountStore(store: MultiAccountStore) {
   const activeAcc = store.accounts.find(a => a.email === store.activeEmail) || store.accounts[0];
   const payload = {
@@ -227,15 +312,24 @@ export function saveAccountStore(store: MultiAccountStore) {
       lastSyncedAt: a.lastSyncedAt,
       ...(a.balanceChangedAt ? { balanceChangedAt: a.balanceChangedAt } : {}),
       ...(a.lastTotalRecharged !== undefined ? { lastTotalRecharged: a.lastTotalRecharged } : {}),
+      // 凭据续期字段：必须一并持久化，否则重启后又要重新登录
+      ...(a.refreshToken ? { refreshToken: a.refreshToken } : {}),
+      ...(a.accessTokenExpiresAt ? { accessTokenExpiresAt: a.accessTokenExpiresAt } : {}),
+      ...(a.refreshTokenExpiresAt ? { refreshTokenExpiresAt: a.refreshTokenExpiresAt } : {}),
+      ...(a.refreshedAt ? { refreshedAt: a.refreshedAt } : {}),
       ...(a.snapshot ? { snapshot: a.snapshot } : {})
     }))
   };
 
-  const targets = [getGlobalStoreFile(), getLocalConfigFile()];
-  for (const file of targets) {
-    try {
-      fs.writeFileSync(file, JSON.stringify(payload, null, 2), 'utf8');
-    } catch {}
+  const content = JSON.stringify(payload, null, 2);
+  // 两份文件各自独立成功：任何一份成功都不会丢凭据。
+  // 只有两份都失败才算真失败，交给调用方的节流写入器记录告警。
+  let anySuccess = false;
+  for (const file of [getGlobalStoreFile(), getLocalConfigFile()]) {
+    if (writeFileAtomic(file, content)) anySuccess = true;
+  }
+  if (!anySuccess) {
+    throw new Error('账号库写入失败（两份目标文件均无法写入）');
   }
 }
 
@@ -256,30 +350,190 @@ export function normalizeWidgetPosition(input: any): WidgetPosition | null {
   };
 }
 
-function sendJson(response: http.ServerResponse, status: number, payload: unknown) {  response.writeHead(status, {
+/**
+ * 判断一个 Origin 是否允许访问本地桥接服务。
+ *
+ * 为什么不能继续用 `*`：桥接端口开在 127.0.0.1:53788 且允许任意 Origin 后，
+ * 用户打开的**任意网页**都能 `fetch` 到这里修改偏好、触发更新下载安装 ——
+ * 等于把本机文件写入能力暴露给了所有网站。
+ *
+ * 放行的来源：
+ * - 无 Origin（同源请求、curl、DSH 自身的服务端渲染）；
+ * - 本机回环地址（HTTP/HTTPS 任意端口，DSH Web GUI 就是其中之一）；
+ * - dsh:// 自定义协议（桌面端唤起的页面）。
+ */
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol === 'dsh:') return true;
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    return parsed.hostname === '127.0.0.1'
+      || parsed.hostname === 'localhost'
+      || parsed.hostname === '[::1]'
+      || parsed.hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 为响应写 CORS 头。
+ * 命中白名单就回显该 Origin，否则不回 CORS 头（浏览器会拦截）。
+ */
+function applyCorsHeaders(response: http.ServerResponse, origin: string | undefined) {
+  if (origin && isAllowedOrigin(origin)) {
+    response.setHeader('access-control-allow-origin', origin);
+    response.setHeader('vary', 'Origin');
+    response.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+    response.setHeader('access-control-allow-headers', 'Content-Type, Authorization');
+  }
+  // Origin 不在白名单时不写 ACAO，浏览器端请求会被拒绝
+}
+
+function sendJson(response: http.ServerResponse, status: number, payload: unknown) {
+  applyCorsHeaders(response, response.req?.headers?.origin);
+  response.writeHead(status, {
     'cache-control': 'no-store',
-    'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'Content-Type, Authorization'
+    'content-type': 'application/json; charset=utf-8'
   });
   response.end(JSON.stringify(payload));
 }
 
+/** 请求体上限：这些路由只收偏好/账号名，256KB 已经很宽松 */
+const MAX_BODY_BYTES = 256 * 1024;
+
 function readJsonBody(request: http.IncomingMessage): Promise<any> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let size = 0;
+    let done = false;
+    const finish = (value: any) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    request.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        // 超限直接丢弃连接，避免被无限撑大内存
+        try { request.destroy(); } catch {}
+        finish({});
+        return;
+      }
+      chunks.push(chunk);
+    });
     request.on('end', () => {
       try {
         const raw = Buffer.concat(chunks).toString('utf8');
-        resolve(raw ? JSON.parse(raw) : {});
+        finish(raw ? JSON.parse(raw) : {});
       } catch {
-        resolve({});
+        finish({});
       }
     });
-    request.on('error', () => resolve({}));
+    request.on('error', () => finish({}));
   });
+}
+
+/** 找到随插件分发的 tutorial.html */
+function findTutorialFile(): string {
+  const candidates = [
+    path.resolve(__dirname, '../tutorial.html'),
+    path.resolve(__dirname, './tutorial.html'),
+    path.join(process.cwd(), 'tutorial.html')
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {
+      // 继续尝试下一个候选
+    }
+  }
+  return '';
+}
+
+/**
+ * 用系统默认程序打开一个本地文件。
+ *
+ * 用 execFile 而不是 exec 拼字符串：本地路径可能含空格、引号或 & ，
+ * 拼进 shell 既有注入风险也会打不开。
+ */
+function openPath(file: string): boolean {
+  if (!file) return false;
+  try {
+    const platform = process.platform;
+    if (platform === 'win32') {
+      // Windows 上 start 是 cmd 内建命令，必须经 cmd 转调；路径作为独立参数传入
+      spawn('cmd', ['/c', 'start', '', file], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    } else if (platform === 'darwin') {
+      spawn('open', [file], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [file], { detached: true, stdio: 'ignore' }).unref();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface SaveThrottleState {
+  timer: NodeJS.Timeout | null;
+  lastWrite: number;
+  pending: boolean;
+}
+
+/**
+ * 给 saveAccountStore 加节流。
+ *
+ * 为什么要节流：默认刷新间隔 30 秒，每次刷新都会重写两份 JSON（含完整 snapshot），
+ * 高频次轮询下这是无意义的写放大，SSD 上尤其明显。
+ * 但「凭据续期」必须立即落盘（refresh token 一次性，丢了只能重新登录），
+ * 所以提供一个 `flushNow` 强制写入的入口。
+ */
+function createStoreWriter(store: MultiAccountStore, logger?: any) {
+  const state: SaveThrottleState = { timer: null, lastWrite: 0, pending: false };
+  const MIN_INTERVAL_MS = 5_000;
+
+  const doWrite = () => {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    state.lastWrite = Date.now();
+    state.pending = false;
+    try {
+      saveAccountStore(store);
+    } catch (err: any) {
+      logger?.warn?.(`[鱼鱼API] 写入账号库失败: ${err?.message || err}`);
+    }
+  };
+
+  /** 常规保存：距上次写盘不足 5 秒就推迟，避免高频轮询写放大 */
+  const save = () => {
+    const elapsed = Date.now() - state.lastWrite;
+    if (elapsed >= MIN_INTERVAL_MS) {
+      doWrite();
+      return;
+    }
+    state.pending = true;
+    if (state.timer) return;
+    state.timer = setTimeout(doWrite, MIN_INTERVAL_MS - elapsed);
+    if (typeof state.timer.unref === 'function') state.timer.unref();
+  };
+
+  /** 立即写盘（凭据变更、账号增删等不可丢失的变更） */
+  const flushNow = () => doWrite();
+
+  /** 卸载时把未落盘的变更补上 */
+  const dispose = () => {
+    if (state.pending) doWrite();
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+  };
+
+  return { save, flushNow, dispose };
 }
 
 /**
@@ -299,6 +553,55 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
   const client = new YuyuApiClient(getActiveAccount()?.token || '', store.baseUrl);
 
+  // 账号库写盘：日常刷新走节流，凭据变更走立即落盘
+  const storeWriter = createStoreWriter(store, logger);
+  const persist = () => storeWriter.save();
+  const persistNow = () => storeWriter.flushNow();
+
+  // —— 凭据自动续期 ——
+  // access token 约 24 小时过期；有 refresh token 就能无感续期，不再需要用户 1~2 天重登。
+  const credentialManager = createCredentialManager({
+    get: (email) => {
+      const acc = store.accounts.find(a => a.email === email);
+      if (!acc) return undefined;
+      return {
+        email: acc.email,
+        accessToken: acc.token,
+        refreshToken: acc.refreshToken,
+        accessTokenExpiresAt: acc.accessTokenExpiresAt || jwtExpiry(acc.token),
+        refreshTokenExpiresAt: acc.refreshTokenExpiresAt
+      };
+    },
+    set: (creds) => {
+      const idx = store.accounts.findIndex(a => a.email === creds.email);
+      if (idx < 0) return;
+      const acc = store.accounts[idx];
+      acc.token = creds.accessToken;
+      if (creds.refreshToken) acc.refreshToken = creds.refreshToken;
+      if (creds.accessTokenExpiresAt) acc.accessTokenExpiresAt = creds.accessTokenExpiresAt;
+      if (creds.refreshTokenExpiresAt) acc.refreshTokenExpiresAt = creds.refreshTokenExpiresAt;
+      acc.refreshedAt = Date.now();
+      if (store.activeEmail === acc.email) client.updateToken(acc.token);
+      store.credentialsDegraded = false;
+      // 凭据必须立刻落盘：refresh token 一次性，丢了就只能重新登录
+      persistNow();
+    },
+    recoverFromBrowser: async () => {
+      const { scanLocalLevelDBTokens } = await import('./browser-sync.js');
+      const { all } = scanLocalLevelDBTokens();
+      if (all.length === 0) return null;
+      // 优先返回当前激活账号，没有再退回最新登录的那个
+      const preferred = all.find(t => t.email === store.activeEmail) || all[0];
+      return {
+        email: preferred.email,
+        accessToken: preferred.token,
+        refreshToken: preferred.refreshToken,
+        accessTokenExpiresAt: preferred.exp * 1000
+      };
+    },
+    logger
+  }, store.baseUrl);
+
   /** 最近一次快照（供会话跟踪器取轮次基线，避免每次轮次都打网络） */
   let cachedSnapshot: BalanceSnapshot | null = getActiveAccount()?.snapshot || null;
   /** 最近一轮汇报 + 单调递增 seq（前端据此判断“有新的一轮”） */
@@ -309,7 +612,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   let lastUpdateInfo: UpdateInfo | null = null;
   let updateInFlight: Promise<UpdateInfo> | null = null;
 
-  const upsertAccount = (token: string, snap: BalanceSnapshot, setActive = true) => {
+  const upsertAccount = (token: string, snap: BalanceSnapshot, setActive = true, extra?: Partial<SavedAccount>) => {
     if (!snap.email) return;
     const now = new Date().toISOString();
     const existingIdx = store.accounts.findIndex(a => a.email === snap.email);
@@ -330,7 +633,15 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       balanceChangedAt: (balanceChanged || rechargeChanged)
         ? now
         : (previous?.balanceChangedAt || now),
-      lastTotalRecharged: snap.totalRecharged
+      lastTotalRecharged: snap.totalRecharged,
+      // 保留已有凭据续期信息，别在每次刷新时把 refresh token 抹掉
+      ...(previous?.refreshToken ? { refreshToken: previous.refreshToken } : {}),
+      ...(previous?.accessTokenExpiresAt ? { accessTokenExpiresAt: previous.accessTokenExpiresAt } : {}),
+      ...(previous?.refreshTokenExpiresAt ? { refreshTokenExpiresAt: previous.refreshTokenExpiresAt } : {}),
+      ...(previous?.refreshedAt ? { refreshedAt: previous.refreshedAt } : {}),
+      // 新拿到的凭据（浏览器同步时可能带来新的 refresh token）
+      ...(extra?.refreshToken ? { refreshToken: extra.refreshToken } : {}),
+      ...(extra?.accessTokenExpiresAt ? { accessTokenExpiresAt: extra.accessTokenExpiresAt } : {})
     };
     if (existingIdx >= 0) {
       store.accounts[existingIdx] = entry;
@@ -341,53 +652,118 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       store.activeEmail = snap.email;
       client.updateToken(token);
     }
-    saveAccountStore(store);
+    persist();
   };
 
   /**
-   * 刷新指定或当前激活账号的实时快照，并并发刷新账号库内其他已保存账号的快照
+   * 用「自动续期」的方式拉一次快照。
+   *
+   * 为什么不直接在 refreshAccount 里 new YuyuApiClient：
+   * 每个账号有自己的 token，而 token 会在续期后变化。
+   * 统一走 credentialManager.withRetry，保证：
+   * 1) 拿到的永远是最新 token；
+   * 2) 401 时只续期一次并重试，不会无限递归；
+   * 3) 续期成功的新凭据已经落盘。
    */
-  const refreshAccount = async (targetEmail?: string): Promise<BalanceSnapshot | null> => {
-    if (targetEmail) {
-      store.activeEmail = targetEmail;
+  const fetchSnapshotWithCredential = async (acc: SavedAccount): Promise<BalanceSnapshot> => {
+    const run = async (token: string) => {
+      const scoped = new YuyuApiClient(token, store.baseUrl);
+      return await scoped.getBalanceSnapshot(store.alertThreshold);
+    };
+
+    try {
+      const snap = await credentialManager.withRetry(acc.email, run);
+      // withRetry 成功后，store 里的 token 可能已经被续期，同步回内存中的 acc
+      const latest = store.accounts.find(a => a.email === acc.email);
+      if (latest && latest.token && latest.token !== acc.token) acc.token = latest.token;
+      return snap;
+    } catch (err: any) {
+      // 续期与重试都失败：返回一个失败的快照而不是抛错，让上层继续用旧数据
+      const message = err?.message || String(err);
+      const unauthorized = isUnauthorizedLike(err);
+      if (unauthorized) store.credentialsDegraded = true;
+      return {
+        success: false,
+        timestamp: Date.now(),
+        email: acc.email,
+        balance: acc.balance || 0,
+        frozenBalance: 0,
+        totalRecharged: 0,
+        todayCost: 0,
+        todayRawCost: 0,
+        todayTokens: 0,
+        todayRequests: 0,
+        totalRequests: 0,
+        totalActualCost: 0,
+        keysCount: 0,
+        keysSummary: [],
+        isLowBalance: false,
+        alertThreshold: store.alertThreshold,
+        formattedText: `[错误] 查询鱼鱼API余额失败: ${message}`,
+        error: message,
+        unauthorized
+      };
     }
-    const acc = getActiveAccount();
-    if (!acc || !acc.token) return null;
+  };
 
-    store.activeEmail = acc.email;
-    client.updateToken(acc.token);
+  /**
+   * 刷新指定或当前激活账号的实时快照，并并发刷新账号库内其他已保存账号的快照。
+   *
+   * 关键改动：所有请求都经过 credentialManager.withRetry ——
+   * access token 过期（401）时会先用 refresh token 续期再重试，
+   * 从而避免「隔 1~2 天就得重新登录」。
+   *
+   * 幂等约束：`targetEmail` 只用于「本次读哪个账号」，**不修改** store.activeEmail。
+   * 早期版本在这里直接改 activeEmail，而 GET /snapshot?email=A 也会进来 ——
+   * 一个带副作用的 GET 会在并发刷新时反复改写「当前账号」。
+   * 切号只允许走 POST /switch。
+   *
+   * @param options.others 是否顺带刷新账号库里的其他账号（默认 true）。
+   *        轮次汇报这类高频调用应传 false，避免每次轮次都打 N+1 次上游请求。
+   */
+  const refreshAccount = async (
+    targetEmail?: string,
+    options: { others?: boolean } = {}
+  ): Promise<BalanceSnapshot | null> => {
+    const acc = targetEmail
+      ? (store.accounts.find(a => a.email === targetEmail) || getActiveAccount())
+      : getActiveAccount();
+    if (!acc) return null;
 
-    const snap = await client.getBalanceSnapshot(store.alertThreshold);
+    const isActive = acc.email === store.activeEmail;
+    const snap = await fetchSnapshotWithCredential(acc);
     if (snap.success) {
-      upsertAccount(acc.token, snap, true);
+      upsertAccount(acc.token, snap, isActive);
     }
 
-    // 并发刷新其他保存账号的最新数据
-    await Promise.allSettled(
-      store.accounts
-        .filter(a => a.email !== acc.email && a.token)
-        .map(async (other) => {
-          const otherClient = new YuyuApiClient(other.token, store.baseUrl);
-          const otherSnap = await otherClient.getBalanceSnapshot(store.alertThreshold);
-          if (otherSnap.success) {
-            const balanceChanged = Math.abs(Number(other.balance || 0) - otherSnap.balance) > 1e-9;
-            const rechargeChanged = other.lastTotalRecharged !== undefined
-              && Math.abs(Number(other.lastTotalRecharged) - otherSnap.totalRecharged) > 1e-9;
-            const now = new Date().toISOString();
-            if (balanceChanged || rechargeChanged) {
-              other.balanceChangedAt = now;
-            } else if (!other.balanceChangedAt) {
-              other.balanceChangedAt = now;
+    // 并发刷新其他保存账号的最新数据（同一账号的去重交给 withRetry 的 in-flight 合并）
+    if (options.others !== false) {
+      await Promise.allSettled(
+        store.accounts
+          .filter(a => a.email !== acc.email)
+          .map(async (other) => {
+            const otherSnap = await fetchSnapshotWithCredential(other);
+            if (otherSnap.success) {
+              const balanceChanged = Math.abs(Number(other.balance || 0) - otherSnap.balance) > 1e-9;
+              const rechargeChanged = other.lastTotalRecharged !== undefined
+                && Math.abs(Number(other.lastTotalRecharged) - otherSnap.totalRecharged) > 1e-9;
+              const now = new Date().toISOString();
+              if (balanceChanged || rechargeChanged) {
+                other.balanceChangedAt = now;
+              } else if (!other.balanceChangedAt) {
+                other.balanceChangedAt = now;
+              }
+              other.balance = otherSnap.balance;
+              other.lastTotalRecharged = otherSnap.totalRecharged;
+              other.lastSyncedAt = now;
+              other.snapshot = otherSnap;
             }
-            other.balance = otherSnap.balance;
-            other.lastTotalRecharged = otherSnap.totalRecharged;
-            other.lastSyncedAt = now;
-            other.snapshot = otherSnap;
-          }
-        })
-    );
-    saveAccountStore(store);
-    if (snap.success) cachedSnapshot = snap;
+          })
+      );
+    }
+    persist();
+    // 只有当前激活账号的快照能作为「轮次基线」缓存
+    if (snap.success && isActive) cachedSnapshot = snap;
     return snap.success ? snap : (acc.snapshot || snap);
   };
 
@@ -418,23 +794,75 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     }
 
     let scanRes = await scanRunningBrowsersForToken();
+
+    // 正常扫描找不到有效 access token 时，退一步找「已过期但还留着 refresh token」的账号。
+    // 这是「隔一两天就得重新登录」的主要挽回路径：access token 24h 就过期，
+    // 而浏览器里那份 rt 往往还有效，用它可以无感换回一对新凭据。
+    if (!scanRes.success) {
+      try {
+        const { scanExpiredAccountsWithRefreshToken } = await import('./browser-sync.js');
+        const recoverable = scanExpiredAccountsWithRefreshToken();
+        for (const item of recoverable) {
+          if (!item.refreshToken) continue;
+          const recovered = await refreshWithToken(item.refreshToken, store.baseUrl);
+          if (!recovered.ok || !recovered.credentials) continue;
+
+          const existing = store.accounts.find(a => a.email === item.email);
+          if (existing) {
+            existing.token = recovered.credentials.accessToken;
+            existing.refreshToken = recovered.credentials.refreshToken;
+            existing.accessTokenExpiresAt = recovered.credentials.accessTokenExpiresAt;
+            existing.refreshTokenExpiresAt = recovered.credentials.refreshTokenExpiresAt;
+            existing.refreshedAt = Date.now();
+          } else {
+            store.accounts.push({
+              email: item.email,
+              token: recovered.credentials.accessToken,
+              refreshToken: recovered.credentials.refreshToken,
+              balance: 0,
+              lastSyncedAt: new Date().toISOString(),
+              accessTokenExpiresAt: recovered.credentials.accessTokenExpiresAt,
+              refreshTokenExpiresAt: recovered.credentials.refreshTokenExpiresAt,
+              refreshedAt: Date.now()
+            });
+          }
+          store.activeEmail = item.email;
+          store.credentialsDegraded = false;
+          persistNow();
+          logger.info?.(`[鱼鱼API] 已用浏览器的 refresh token 恢复账号 ${item.email}`);
+        }
+      } catch (err: any) {
+        logger.warn?.(`[鱼鱼API] 过期账号恢复失败: ${err?.message || err}`);
+      }
+    }
+
     if (!scanRes.success && forceCapture) {
       scanRes = await launchAndCaptureToken();
     }
 
     if (scanRes.success && scanRes.token) {
-      // 1. 将浏览器中发现的所有有效账号同步进账号库
+      // 1. 将浏览器中发现的所有有效账号同步进账号库（含 refresh token）
       if (Array.isArray(scanRes.allDiscovered)) {
         for (const disc of scanRes.allDiscovered) {
           const existing = store.accounts.find(a => a.email === disc.email);
+          const expiresAt = typeof disc.exp === 'number' ? disc.exp * 1000 : undefined;
           if (existing) {
             existing.token = disc.token;
+            existing.accessTokenExpiresAt = expiresAt;
+            // 浏览器里的 refresh token 是「最新写入」的那份，优先采纳
+            if (disc.refreshToken) {
+              existing.refreshToken = disc.refreshToken;
+              existing.refreshTokenExpiresAt = disc.refreshExpiresAt;
+            }
           } else {
             store.accounts.push({
               email: disc.email,
               token: disc.token,
               balance: 0,
-              lastSyncedAt: new Date().toISOString()
+              lastSyncedAt: new Date().toISOString(),
+              ...(disc.refreshToken ? { refreshToken: disc.refreshToken } : {}),
+              ...(expiresAt ? { accessTokenExpiresAt: expiresAt } : {}),
+              ...(disc.refreshExpiresAt ? { refreshTokenExpiresAt: disc.refreshExpiresAt } : {})
             });
           }
         }
@@ -479,6 +907,21 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     };
   };
 
+  const buildCredentialHealth = (): CredentialHealth | null => {
+    const acc = getActiveAccount();
+    if (!acc) return null;
+    const expiresAt = acc.accessTokenExpiresAt || jwtExpiry(acc.token);
+    return {
+      email: acc.email,
+      hasRefreshToken: Boolean(acc.refreshToken),
+      accessTokenExpiresAt: expiresAt,
+      refreshTokenExpiresAt: acc.refreshTokenExpiresAt,
+      msUntilExpiry: expiresAt ? expiresAt - Date.now() : undefined,
+      mode: acc.refreshToken ? 'auto' : 'manual',
+      lastRefreshedAt: acc.refreshedAt
+    };
+  };
+
   const buildResponsePayload = (extra: Record<string, any> = {}) => {
     const activeAcc = getActiveAccount();
     return {
@@ -486,12 +929,15 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       activeEmail: store.activeEmail,
       refreshInterval: store.refreshInterval || '30s',
       snapshot: activeAcc?.snapshot || null,
+      /** 凭据健康度：前端据此显示「自动续期中，还可撑 X 小时」 */
+      credential: buildCredentialHealth(),
       accounts: store.accounts.map(a => ({
         email: a.email,
         balance: a.balance,
         lastSyncedAt: a.lastSyncedAt,
         balanceChangedAt: a.balanceChangedAt || null,
         active: a.email === store.activeEmail,
+        hasRefreshToken: Boolean(a.refreshToken),
         snapshot: a.snapshot || null
       })),
       preferences: store.preferences,
@@ -514,7 +960,9 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   /** 按用户偏好决定是否发通知，并组装文案。 */
   const notifyTurnReport = async (report: TurnUsageReport) => {
     const prefs = store.preferences;
-    if (!prefs.notifyOnComplete) return;
+    const mode = prefs.notifyMode || (prefs.notifyOnComplete ? 'both' : 'off');
+    const allowWin = mode === 'both' || mode === 'windows';
+    if (!allowWin) return;
     if (report.isSubagent && prefs.notifySubagentMute) return;
     if (report.reason !== 'completed' && !prefs.notifyOnFailure) return;
 
@@ -547,7 +995,9 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   const sessionTracker = createSessionTracker({
     getCachedSnapshot: () => cachedSnapshot,
     refreshSnapshot: async () => {
-      const snap = await refreshAccount().catch(() => null);
+      // 只刷当前账号：轮次开始/结束各调一次，若顺带刷 N 个账号，
+      // 一轮对话就会打出 2×(N+1) 次上游请求，很容易触发限流。
+      const snap = await refreshAccount(undefined, { others: false }).catch(() => null);
       return snap && snap.success ? snap : null;
     },
     onReport: async (report) => {
@@ -589,12 +1039,34 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   };
 
   const handleHttpRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    // 来源校验：非白名单 Origin 一律拒绝。
+    // 只靠 CORS 不够（简单请求仍会被发出），必须在服务端也挡住。
+    const origin = req.headers.origin;
+    if (!isAllowedOrigin(origin)) {
+      try {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Forbidden origin');
+      } catch {}
+      return;
+    }
+
     if (req.method === 'OPTIONS') {
       sendJson(res, 200, { ok: true });
       return;
     }
 
-    const url = new URL(String(req.url || '/'), 'http://127.0.0.1');
+    // URL 解析必须包在 try 里：畸形请求行（如 "GET //[::1 HTTP/1.1"）会让 new URL 抛错，
+    // 而这个 async 函数是裸调用（没有 .catch），抛错会变成未处理 rejection 直接打崩主进程。
+    let url: URL;
+    try {
+      url = new URL(String(req.url || '/'), 'http://127.0.0.1');
+    } catch {
+      try {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Bad Request');
+      } catch {}
+      return;
+    }
     const route = url.pathname.startsWith(API_PREFIX)
       ? url.pathname.slice(API_PREFIX.length) || '/'
       : url.pathname;
@@ -651,7 +1123,11 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         const interval = String(body?.interval || '').trim() as RefreshInterval;
         if (INTERVAL_MAP[interval]) {
           store.refreshInterval = interval;
-          saveAccountStore(store);
+          persistNow();
+          // 重建后台定时器，否则后端仍按启动时的旧频率刷新
+          try { refreshIntervalApplier?.(); } catch (err: any) {
+            logger?.warn?.(`[鱼鱼API] 重建刷新定时器失败: ${err?.message || err}`);
+          }
           sendJson(res, 200, buildResponsePayload({
             refreshInterval: store.refreshInterval,
             message: `刷新频率已设置为 ${interval}`
@@ -673,7 +1149,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         if (store.activeEmail === targetEmail) {
           store.activeEmail = store.accounts[0].email;
         }
-        saveAccountStore(store);
+        persistNow();
         await refreshAccount(store.activeEmail);
         sendJson(res, 200, buildResponsePayload({
           message: `已移除账号 ${targetEmail}`
@@ -708,7 +1184,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
           next.widgetPosition = normalizeWidgetPosition(body.widgetPosition);
         }
         store.preferences = next;
-        saveAccountStore(store);
+        persistNow();
         sendJson(res, 200, {
           ok: true,
           preferences: store.preferences,
@@ -769,6 +1245,19 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
         const info = await runUpdateCheck(false);
         if (!info.available || !info.downloadUrl) {
           sendJson(res, 400, { ok: false, message: '当前没有可下载的新版本' });
+          return;
+        }
+
+        // 安全闸门：没有可校验的 sha256 就不允许自动安装。
+        // 否则一旦更新源被中间人/恶意 feed 篡改，下载到的包会被直接解压到插件目录，
+        // 等于把任意代码写进本机（并随 DSH 启动执行）。
+        if (!info.sha256 || !/^[a-f0-9]{64}$/i.test(info.sha256)) {
+          sendJson(res, 400, {
+            ok: false,
+            error: '更新源未提供 sha256 校验值，已拒绝自动安装',
+            message: '更新源未提供 sha256 校验值，为安全起见已拒绝自动安装。请手动下载安装包。',
+            releaseUrl: info.releaseUrl
+          });
           return;
         }
 
@@ -838,30 +1327,122 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       }
 
       if (req.method === 'POST' && route === '/open-tutorial') {
-        const tutorialCandidates = [
-          path.resolve(__dirname, '../tutorial.html'),
-          path.resolve(__dirname, './tutorial.html'),
-          path.join(process.cwd(), 'tutorial.html')
-        ];
-        let found = '';
-        for (const p of tutorialCandidates) {
-          if (fs.existsSync(p)) {
-            found = p;
-            break;
-          }
-        }
+        const found = findTutorialFile();
         if (found) {
-          if (process.platform === 'win32') {
-            exec(`start "" "${found}"`);
-          } else if (process.platform === 'darwin') {
-            exec(`open "${found}"`);
-          } else {
-            exec(`xdg-open "${found}"`);
+          // 用 openPath 而不是拼字符串进 shell：路径来自 __dirname，可能是插件安装目录，
+          // 直接拼 exec 会被路径里的空格/引号破坏（也构成命令注入面）。
+          if (openPath(found)) {
+            sendJson(res, 200, { ok: true, message: '已在浏览器中打开使用教程' });
+            return;
           }
-          sendJson(res, 200, { ok: true, message: '已在浏览器中打开使用教程' });
-          return;
         }
         sendJson(res, 404, { ok: false, message: '未找到 tutorial.html 文件' });
+        return;
+      }
+
+      if (req.method === 'POST' && route === '/open-topup') {
+        if (openExternal('https://sub.anzhiyu.com/topup')) {
+          sendJson(res, 200, { ok: true, message: '已在浏览器中打开充值页面' });
+        } else {
+          sendJson(res, 500, { ok: false, message: '打开充值页面失败' });
+        }
+        return;
+      }
+
+      // 手动触发凭据续期：前端「立即续期」按钮 / 诊断用
+      if (req.method === 'POST' && route === '/credential/refresh') {
+        const body = await readJsonBody(req);
+        const targetEmail = String(body?.email || store.activeEmail || '').trim();
+        const acc = store.accounts.find(a => a.email === targetEmail);
+        if (!acc) {
+          sendJson(res, 404, { ok: false, message: `未找到账号 ${targetEmail}` });
+          return;
+        }
+        const token = await credentialManager.ensureFresh(acc.email, true);
+        if (!token) {
+          sendJson(res, 200, {
+            ok: false,
+            credential: buildCredentialHealth(),
+            message: acc.refreshToken
+              ? '自动续期失败：refresh token 可能已过期，请在浏览器重新登录后点「从浏览器同步」'
+              : '该账号没有 refresh token，无法自动续期：请先在浏览器登录 sub.anzhiyu.com 并点「从浏览器同步」'
+          });
+          return;
+        }
+        const snap = await refreshAccount(acc.email);
+        sendJson(res, 200, {
+          ok: Boolean(snap?.success),
+          credential: buildCredentialHealth(),
+          message: snap?.success
+            ? `凭据已续期，当前余额 $${Number(snap.balance || 0).toFixed(2)}`
+            : '凭据已续期，但余额刷新失败，请稍后重试'
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && route.startsWith('/assets/')) {
+        const rawName = route.slice('/assets/'.length);
+        // 空文件名会把候选路径解析成 assets/ 目录本身，createReadStream(dir) 会抛 EISDIR
+        // 并作为未捕获异常打崩进程 —— 必须先挡掉。
+        const fileName = path.basename(rawName);
+        if (!fileName || fileName === '.' || fileName === '..') {
+          res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Bad asset name');
+          return;
+        }
+        // 只允许白名单扩展名，避免任意文件读取
+        const ext = path.extname(fileName).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.gif': 'image/gif',
+          '.svg': 'image/svg+xml',
+          '.wav': 'audio/wav',
+          '.mp3': 'audio/mpeg'
+        };
+        if (!mimeMap[ext]) {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Asset not found');
+          return;
+        }
+
+        const assetCandidates = [
+          path.resolve(__dirname, '../assets', fileName),
+          path.resolve(__dirname, './assets', fileName),
+          path.join(process.cwd(), 'assets', fileName)
+        ];
+        let foundPath = '';
+        for (const p of assetCandidates) {
+          try {
+            // 必须是普通文件：目录/设备文件一律跳过
+            if (fs.statSync(p).isFile()) {
+              foundPath = p;
+              break;
+            }
+          } catch {
+            // 不存在或无权限，尝试下一个候选
+          }
+        }
+
+        if (!foundPath) {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Asset not found');
+          return;
+        }
+
+        res.writeHead(200, {
+          'Content-Type': mimeMap[ext],
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=86400'
+        });
+        // 流必须挂 error 处理：文件在 stat 之后被删/被占用时，
+        // 未处理的 'error' 事件同样会打崩进程。
+        const stream = fs.createReadStream(foundPath);
+        stream.on('error', () => {
+          try { res.destroy(); } catch {}
+        });
+        stream.pipe(res);
         return;
       }
 
@@ -871,13 +1452,26 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     }
   };
 
+  /** 由 apply() 注入：重建后台定时器。路由层改完频率后调用。 */
+  let refreshIntervalApplier: (() => void) | null = null;
+  const setRefreshIntervalApplier = (fn: () => void) => {
+    refreshIntervalApplier = typeof fn === 'function' ? fn : null;
+  };
+
   return {
     store,
     client,
+    credentialManager,
     refreshAccount,
     syncFromBrowser,
     handleHttpRequest,
     getActiveAccount,
+    buildCredentialHealth,
+    setRefreshIntervalApplier,
+    /** 启动时预热所有账号凭据（失败的账号保持原样，不影响其他账号） */
+    warmUpCredentials: () => credentialManager.warmUp(store.accounts.map(a => a.email)),
+    /** 卸载时补写未落盘的变更（节流写入器的收尾） */
+    dispose: () => storeWriter.dispose(),
     sessionTracker,
     runUpdateCheck,
     recordTurnReport,
@@ -894,7 +1488,15 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 export function startLocalBridgeServer(service: ReturnType<typeof createYuyuService>, port = BRIDGE_PORT): Promise<http.Server | null> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      service.handleHttpRequest(req, res);
+      service.handleHttpRequest(req, res).catch((err: any) => {
+        // 兜底：任何未预期异常都只能影响当前请求，绝不能让进程退出
+        try {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+          }
+          res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+        } catch {}
+      });
     });
     server.on('error', () => {
       resolve(null);
@@ -1013,7 +1615,16 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
       const disposer = webServer.register({
         kind: 'prefix',
         path: API_PREFIX,
-        handler: (req: http.IncomingMessage, res: http.ServerResponse) => service.handleHttpRequest(req, res)
+        handler: (req: http.IncomingMessage, res: http.ServerResponse) => {
+          service.handleHttpRequest(req, res).catch((err: any) => {
+            try {
+              if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+              }
+              res.end(JSON.stringify({ ok: false, error: err?.message || String(err) }));
+            } catch {}
+          });
+        }
       });
       if (typeof disposer === 'function' && typeof ctx.effect === 'function') {
         ctx.effect(() => disposer, 'dsh-plugin-yuyu-quota: api');
@@ -1041,8 +1652,11 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
   notes.push(`tool=${toolReg}`);
 
   // 4. 立即用已保存账号刷新一次（不走浏览器扫描，保证启动就拿到真实余额）
+  //    先做一次凭据预热：把快过期/已过期的 access token 用 refresh token 换新，
+  //    这样重启后不会因为 token 恰好过期而显示「未授权」。
   service
-    .refreshAccount()
+    .warmUpCredentials()
+    .then(() => service.refreshAccount())
     .then((snap) => {
       if (snap?.success) {
         logger?.info?.(`[鱼鱼API] 启动刷新成功: ${snap.email} ($${snap.balance.toFixed(2)})`);
@@ -1059,10 +1673,23 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
   }, 1500);
 
   // 6. 定时刷新
-  const intervalMs = INTERVAL_MAP[service.store.refreshInterval] || 3 * 60 * 1000;
-  timer = setInterval(() => {
-    service.refreshAccount().catch(() => {});
-  }, intervalMs);
+  // 抽成函数是因为「刷新频率」是运行时可改的：POST /interval 只改了 store，
+  // 早期版本从不重建 timer，导致用户切到「1 秒」后后端仍是旧节拍。
+  const applyRefreshInterval = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+    const ms = INTERVAL_MAP[service.store.refreshInterval] || 3 * 60 * 1000;
+    timer = setInterval(() => {
+      service.refreshAccount().catch(() => {});
+    }, ms);
+    if (typeof timer.unref === 'function') timer.unref();
+    logger?.info?.(`[鱼鱼API] 后台刷新间隔: ${service.store.refreshInterval} (${ms}ms)`);
+  };
+  applyRefreshInterval();
+  // 让路由层改完频率后能通知到这里
+  service.setRefreshIntervalApplier(applyRefreshInterval);
 
   // 7. 订阅会话事件：每轮结束汇报 Token / 额度，并按偏好弹 Windows 原生通知
   const sessionDisposers: Array<() => void> = [];
@@ -1110,6 +1737,8 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
       }
       sessionDisposers.length = 0;
       try { service.sessionTracker.dispose(); } catch {}
+      // 把节流窗口内还没落盘的账号/凭据变更补写掉
+      try { service.dispose(); } catch {}
       if (bridgeServer) {
         try { bridgeServer.close(); } catch {}
         bridgeServer = null;
@@ -1121,8 +1750,8 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
 export * from './types.js';
 export * from './api.js';
 export * from './tool.js';
-export * from './widget.js';
 export * from './browser-sync.js';
 export * from './session-tracker.js';
 export * from './notify.js';
 export * from './update.js';
+export * from './credentials.js';
