@@ -247,7 +247,7 @@ console.log('[ui-test] 8) 设置视图在一屏内放得下');
     check('两栏布局存在', container.querySelectorAll('.yp-col').length === 2);
 
     const required = [
-      '#yuyu-theme-tabs', '#yuyu-style-tabs', '#yuyu-whale-model',
+      '#yuyu-theme-tabs', '#yuyu-style-tabs',
       '#yuyu-interval-tabs', '#yuyu-notify-mode', '#yuyu-sound-effect',
       '#yuyu-press-sound', '#yuyu-sound-test', '#yuyu-press-test',
       '#yuyu-notify-test', '#yuyu-update-check', '#yuyu-version-label',
@@ -255,8 +255,7 @@ console.log('[ui-test] 8) 设置视图在一屏内放得下');
     ];
     const missing = required.filter((sel) => !container.querySelector(sel));
     check('设置项一个不少', missing.length === 0, `缺失: ${missing.join(', ')}`);
-    const modelOpts = container.querySelectorAll('#yuyu-whale-model option');
-    check('立绘仅保留经典款 1 个选项', modelOpts.length === 1 && modelOpts[0].value === 'DSniang1');
+    check('设置中已移除立绘单选行', !container.querySelector('#yuyu-whale-model-row'));
   }
 }
 
@@ -289,6 +288,23 @@ console.log('[ui-test] 10) 余额只拆一次小数位，反复刷新不重复�
     window.eval('void 0');
     check('余额小数位包裹了一次', bal.querySelectorAll('.yp-dec').length === 1, bal.innerHTML);
     check('余额数字可读', /\d/.test(bal.textContent), bal.textContent);
+  }
+}
+
+console.log('[ui-test] 11) 检测到新版本时在设置右上角与检查更新处展示红点角标');
+{
+  const { container, win } = await boot();
+  if (container && win) {
+    const settingsBtn = container.querySelector('#yuyu-card-settings-btn');
+    const updateBtn = container.querySelector('#yuyu-update-check');
+
+    win.__yuyuRenderUpdateInfo({ available: true, latestVersion: '9.9.9', checkedAt: Date.now() });
+    check('检测到新版本时设置按钮带红点', Boolean(settingsBtn && settingsBtn.querySelector('.yuyu-badge-dot')));
+    check('检测到新版本时检查更新按钮带红点', Boolean(updateBtn && updateBtn.querySelector('.yuyu-badge-dot')));
+
+    win.__yuyuRenderUpdateInfo({ available: false, currentVersion: '1.2.2', checkedAt: Date.now() });
+    check('无新版本时设置按钮红点已清除', Boolean(settingsBtn && !settingsBtn.querySelector('.yuyu-badge-dot')));
+    check('无新版本时检查更新按钮红点已清除', Boolean(updateBtn && !updateBtn.querySelector('.yuyu-badge-dot')));
   }
 }
 

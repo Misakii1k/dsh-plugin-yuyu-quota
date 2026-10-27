@@ -1751,11 +1751,19 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
     logger?.warn?.(`[鱼鱼API] 会话事件订阅失败: ${err?.message || err}`);
   }
 
-  // 8. 启动后按偏好检查一次更新
+  // 8. 启动后按偏好检查一次更新，并启动后台周期性静默检测
+  let updateIntervalTimer: NodeJS.Timeout | null = null;
   if (service.store.preferences.updateCheck) {
     setTimeout(() => {
       service.runUpdateCheck(true).catch(() => {});
     }, 8000);
+    const hours = service.store.preferences.updateCheckIntervalHours || 6;
+    const intervalMs = Math.max(0.5, hours) * 3600_000;
+    updateIntervalTimer = setInterval(() => {
+      if (service.store.preferences.updateCheck) {
+        service.runUpdateCheck(true).catch(() => {});
+      }
+    }, intervalMs);
   }
 
   // 9. 卸载清理
@@ -1763,6 +1771,8 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
     ctx.effect(() => () => {
       if (timer) clearInterval(timer);
       timer = null;
+      if (updateIntervalTimer) clearInterval(updateIntervalTimer);
+      updateIntervalTimer = null;
       for (const dispose of sessionDisposers) {
         try { dispose(); } catch {}
       }
