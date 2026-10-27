@@ -231,12 +231,17 @@
   }
 
   function formatSyncTime() {
-    if (!tokenStore.fetchedAt) return '尚未获取';
+    if (!tokenStore.fetchedAt) return '未同步';
     try {
       return new Date(tokenStore.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch (e) {
       return new Date(tokenStore.fetchedAt).toLocaleTimeString();
     }
+  }
+
+  function formatSyncText() {
+    if (!tokenStore.fetchedAt) return '未同步';
+    return formatSyncTime() + ' 同步';
   }
 
   function applyBackendPayload(body) {
@@ -397,7 +402,8 @@
     accountRowSignature = signature;
 
     rowEl.innerHTML = '';
-    if (accounts.length === 0) return;
+    // 单账号时无需在顶栏渲染首字母胶囊，避免与左侧邮箱形成重复噪音
+    if (accounts.length <= 1) return;
 
     function shortLabel(email) {
       var name = String(email).replace(/@.*/, '');
@@ -530,7 +536,7 @@
     if (footMeta) {
       var bits = [];
       bits.push(tokenStore.keysCount + ' 个密钥');
-      bits.push(tokenStore.online ? formatSyncTime() + ' 同步' : '离线');
+      bits.push(tokenStore.online ? formatSyncText() : '离线');
       if (tokenStore.version) bits.push('v' + tokenStore.version);
       footMeta.textContent = bits.join(' · ');
     }
@@ -540,9 +546,9 @@
     var connWrap = document.getElementById('yuyu-conn-wrap');
     if (connLabel) {
       if (tokenStore.online) {
-        connLabel.textContent = formatSyncTime();
+        connLabel.textContent = '就绪';
       } else if (tokenStore.lastError && /凭据|token|401|未授权|登录/i.test(tokenStore.lastError)) {
-        connLabel.textContent = '登录已过期';
+        connLabel.textContent = '凭据过期';
       } else {
         connLabel.textContent = '离线';
       }
@@ -550,8 +556,21 @@
     if (connWrap) {
       connWrap.classList.toggle('off', !tokenStore.online);
       connWrap.title = tokenStore.online
-        ? '数据来自本地直连，最后一次同步 ' + tokenStore.lastSync
-        : '离线，当前显示 ' + formatSyncTime() + ' 的数据';
+        ? '本地直连就绪 · ' + (tokenStore.fetchedAt ? ('上次同步 ' + formatSyncTime()) : '等待初次同步')
+        : '离线，当前显示 ' + (tokenStore.fetchedAt ? formatSyncTime() : '本地缓存') + ' 的数据';
+    }
+
+    var pillDot = document.getElementById('yuyu-pill-status-dot');
+    if (pillDot) {
+      if (!tokenStore.online) {
+        pillDot.style.display = 'block';
+        pillDot.style.background = 'var(--yp-warn)';
+      } else if (tokenStore.lastError && /凭据|token|401|未授权|过期/i.test(tokenStore.lastError)) {
+        pillDot.style.display = 'block';
+        pillDot.style.background = '#ef4444';
+      } else {
+        pillDot.style.display = 'none';
+      }
     }
 
     renderAccountSwitcherDOM();
@@ -971,6 +990,12 @@
       '     这里不用 :has()：Chromium 上它会让挂载时的样式重算慢 4 倍，',
       '     改由 setCardIsOpen 直接切一个类。 */',
       '  #yuyu-quota-floating-container.yuyu-card-open #yuyu-whale-body { animation-play-state: paused; }',
+      '  #yuyu-whale-menu-btn {',
+      '    transition: opacity 0.16s ease, transform 0.2s ease, color 0.16s ease;',
+      '  }',
+      '  #yuyu-quota-floating-container.yuyu-card-open #yuyu-whale-menu-btn {',
+      '    opacity: 0; pointer-events: none; transform: scale(0.7);',
+      '  }',
       '  @media (prefers-reduced-motion: reduce) {',
       '    #yuyu-whale-body { animation: none !important; }',
       '    #yuyu-card-popup.is-open #yuyu-view-main > *,',
@@ -1003,6 +1028,14 @@
       '  }',
       '  #yuyu-card-popup.is-open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; visibility: visible; }',
       '  #yuyu-card-popup.clamp-to-edge { max-height: calc(100vh - 110px); overflow-y: auto; }',
+      '  #yuyu-card-popup.flip-down {',
+      '    bottom: auto; top: var(--yuyu-card-offset-down, 126px);',
+      '    transform-origin: var(--yuyu-origin-x, right) top;',
+      '    transform: scale(0.96) translateY(-10px);',
+      '  }',
+      '  #yuyu-card-popup.flip-down.is-open {',
+      '    opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; visibility: visible;',
+      '  }',
       '  /* 卡片内容分批入场，错开 40ms，读起来有先后而不是一坨同时出现 */',
       '  #yuyu-card-popup.is-open #yuyu-view-main > *,',
       '  #yuyu-card-popup.is-open #yuyu-view-settings > * {',
@@ -1054,7 +1087,7 @@
       '  .yp-row .yp-v { font-size: 13px; font-weight: 620; color: var(--yp-ink2); letter-spacing: -0.15px; white-space: nowrap; font-variant-numeric: tabular-nums; }',
       '  .yp-row .yp-v.em { color: var(--yp-ink); }',
       '  .yp-row .yp-v small { font-size: 10.5px; font-weight: 500; color: var(--yp-muted); margin-left: 2px; }',
-      '  #yuyu-turn-panel { display: none; flex-direction: column; gap: 9px; }',
+      '  #yuyu-turn-panel { display: none; flex-direction: column; gap: 9px; padding-top: 8px; margin-top: 2px; border-top: 1px dashed var(--yp-hair); }',
       '  #yuyu-turn-panel .yp-v.is-anim { animation: yuyuNumPop 0.32s cubic-bezier(0.16, 1, 0.3, 1); }',
       '  .yp-foot { display: flex; align-items: center; gap: 8px; padding: 11px 20px 13px; border-top: 1px solid var(--yp-hair); }',
       '  .yp-meta { flex: 1; min-width: 0; font-size: 11px; color: var(--yp-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
@@ -1193,7 +1226,9 @@
       '</div>',
       // ===================== 胶囊形态 =====================
       '<div id="yuyu-pill-btn" role="button" tabindex="0">',
-      '  <span style="display:inline-flex;color:var(--yp-muted);">' + SVG_WALLET + '</span>',
+      '  <span id="yuyu-pill-icon" style="display:inline-flex;color:var(--yp-muted);position:relative;">' + SVG_WALLET +
+      '    <i id="yuyu-pill-status-dot" style="display:none;position:absolute;top:-1px;right:-2px;width:5px;height:5px;border-radius:50%;background:var(--yp-warn);box-shadow:0 0 0 1.5px var(--yp-paper);"></i>' +
+      '  </span>',
       '  <span style="font-weight:560;font-size:11px;color:var(--yp-muted);letter-spacing:0.2px;">鱼鱼</span>',
       '  <span id="yuyu-pill-val" style="color:var(--yp-ink);font-weight:650;font-variant-numeric:tabular-nums;font-size:12.5px;">$' + tokenStore.balance.toFixed(2) + '</span>',
       '</div>',
@@ -1239,8 +1274,8 @@
       '        <div class="yp-row"><span class="yp-k">今日实扣</span><span class="yp-v em" id="yuyu-card-cost">$' + tokenStore.todayCost.toFixed(4) + '</span></div>',
       '        <div class="yp-row"><span class="yp-k">今日 Tokens</span><span class="yp-v" id="yuyu-card-tokens">' + tokenStore.todayTokens.toLocaleString() + '</span></div>',
       '        <div id="yuyu-turn-panel">',
-      '          <div class="yp-row"><span class="yp-k">本轮 Tokens</span><span class="yp-v" id="yuyu-turn-tokens">—</span></div>',
       '          <div class="yp-row"><span class="yp-k">本轮实扣</span><span class="yp-v em" id="yuyu-turn-quota">—</span></div>',
+      '          <div class="yp-row"><span class="yp-k">本轮 Tokens</span><span class="yp-v" id="yuyu-turn-tokens">—</span></div>',
       '        </div>',
       '      </div>',
       '    </div>',
@@ -1414,6 +1449,7 @@
         container.style.setProperty('--yuyu-card-left', edge === 'left' ? '0' : 'auto');
         container.style.setProperty('--yuyu-card-right', edge === 'left' ? 'auto' : '0');
         container.style.setProperty('--yuyu-origin-x', edge === 'left' ? 'left' : 'right');
+        updateCardPlacement();
         if (whaleRoot) {
           if (edge === 'left') whaleRoot.classList.add('yuyu-whale-flipped');
           else whaleRoot.classList.remove('yuyu-whale-flipped');
@@ -1451,18 +1487,31 @@
      * 其中两处还各自 toggle 自己的 isOpen，互相抵消 —— 这是「切胶囊后点不开」的根因。
      * 现在所有入口都只改这一个状态。
      */
+    function updateCardPlacement() {
+      if (!card || !container) return;
+      var rect = container.getBoundingClientRect();
+      var isSettings = card.classList.contains('yp-settings');
+      var neededHeight = isSettings ? 370 : 230;
+      var offsetUp = tokenStore.widgetStyle === 'whale' ? 132 : 44;
+      var spaceAbove = rect.top - offsetUp;
+      var spaceBelow = window.innerHeight - rect.bottom - (tokenStore.widgetStyle === 'whale' ? 126 : 38);
+      var shouldFlipDown = spaceAbove < neededHeight && spaceBelow >= spaceAbove;
+      card.classList.toggle('flip-down', shouldFlipDown);
+    }
+
     function setCardIsOpen(next) {
       var target = Boolean(next);
       // 容器上的这个类只管「小鲸鱼停止呼吸」，和卡片开合一一对应
       if (container) container.classList.toggle('yuyu-card-open', target);
       if (target === isOpen) {
         // 状态没变也要保证 DOM 类名与状态一致（防止外部误改类名）
-        if (target) card.classList.add('is-open');
+        if (target) { card.classList.add('is-open'); updateCardPlacement(); }
         else card.classList.remove('is-open');
         return;
       }
       isOpen = target;
       if (isOpen) {
+        updateCardPlacement();
         if (whaleBubble) whaleBubble.classList.remove('is-open');
         if (bubblePopup) bubblePopup.classList.remove('is-open');
         card.classList.add('is-open');
@@ -1499,7 +1548,9 @@
       // 小鲸鱼 118px 高，留 12px 呼吸位；胶囊只有 32px 高，跟着一起收紧。
       if (container) {
         container.style.setProperty('--yuyu-card-offset', style === 'whale' ? '132px' : '44px');
+        container.style.setProperty('--yuyu-card-offset-down', style === 'whale' ? '126px' : '38px');
       }
+      updateCardPlacement();
 
       // 关键：拖动把手必须跟着换，否则切到胶囊后既拖不动也点不到
       activeHandle = style === 'whale' ? whaleRoot : pill;
@@ -2322,6 +2373,7 @@
     function setSettingsView(next) {
       isSettingsView = Boolean(next);
       card.classList.toggle('yp-settings', isSettingsView);
+      updateCardPlacement();
       if (isSettingsView) {
         // 换视图后容器宽度不变、高度变了，重新钳制一次位置
         if (draggable && typeof draggable.applyPosition === 'function') {

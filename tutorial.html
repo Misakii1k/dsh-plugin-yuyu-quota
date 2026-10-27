@@ -3,316 +3,270 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>鱼鱼 API 资产监控插件 - 新手使用教程</title>
+  <title>鱼鱼 API 资产监控插件 - 新手指南</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
+      background: #f7f7f6;
+      background-image: radial-gradient(rgba(22, 24, 28, 0.08) 1px, transparent 1px);
+      background-size: 20px 20px;
+      color: #16181c;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 24px 16px;
+      padding: 32px 16px;
       overflow-x: hidden;
-    }
-
-    /* 动效关键帧定义 */
-    @keyframes floatSlow {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-6px); }
-    }
-    @keyframes radarPulse {
-      0% { r: 6; opacity: 0.9; }
-      100% { r: 18; opacity: 0; }
-    }
-    @keyframes gearSpin {
-      from { transform: rotate(0deg); }
-      to { transform: rotate(360deg); }
-    }
-    @keyframes chipSwitch {
-      0%, 45% { transform: scale(1.05); filter: drop-shadow(0 4px 8px rgba(37,99,235,0.2)); }
-      55%, 100% { transform: scale(0.95); opacity: 0.7; }
-    }
-    @keyframes scanBeam {
-      0% { transform: translateY(-10px); opacity: 0; }
-      50% { opacity: 1; }
-      100% { transform: translateY(12px); opacity: 0; }
     }
 
     .tutorial-container {
       width: 100%;
-      max-width: 680px;
+      max-width: 620px;
       background: #ffffff;
-      border: 1px solid #e2e8f0;
-      border-radius: 20px;
-      box-shadow: 0 20px 40px -8px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.02);
-      padding: 32px 36px;
+      border: 1px solid #e6e7eb;
+      border-radius: 18px;
+      box-shadow: 0 16px 36px -10px rgba(22, 24, 28, 0.08), 0 2px 6px rgba(22, 24, 28, 0.02);
+      padding: 36px 40px;
       display: flex;
       flex-direction: column;
       gap: 24px;
-      position: relative;
     }
 
-    /* 头部 */
+    /* 头部区域 */
     .header-area {
       display: flex;
-      align-items: center;
-      gap: 14px;
-      border-bottom: 1px solid #f1f5f9;
+      flex-direction: column;
+      gap: 6px;
+      border-bottom: 1px solid #eeeff2;
       padding-bottom: 20px;
     }
-    .hero-icon-box {
-      width: 48px;
-      height: 48px;
-      border-radius: 14px;
-      background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-      border: 1px solid #bfdbfe;
+    .header-top {
       display: flex;
       align-items: center;
-      justify-content: center;
-      color: #2563eb;
-      animation: floatSlow 3.2s ease-in-out infinite;
-      flex-shrink: 0;
+      justify-content: space-between;
+      gap: 12px;
     }
-    .header-text h1 {
-      font-size: 18px;
+    .header-top h1 {
+      font-size: 20px;
       font-weight: 700;
-      color: #0f172a;
-      letter-spacing: -0.3px;
+      color: #16181c;
+      letter-spacing: -0.4px;
+      line-height: 1.3;
     }
-    .header-text p {
-      font-size: 12.5px;
-      color: #64748b;
-      margin-top: 3px;
+    .header-badge {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: #1d6f5b;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    .header-badge i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #1d6f5b;
+      display: inline-block;
+    }
+    .header-area p {
+      font-size: 13.5px;
+      color: #6b7280;
+      line-height: 1.5;
     }
 
-    /* 步骤卡片流 */
+    /* 开放式步骤排版（不套多层卡片） */
     .steps-list {
       display: flex;
       flex-direction: column;
-      gap: 14px;
     }
-    .step-card {
+    .step-item {
       display: flex;
-      gap: 16px;
-      padding: 16px 18px;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 14px;
-      transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+      gap: 18px;
+      padding: 18px 0;
+      border-bottom: 1px solid #f2f3f5;
     }
-    .step-card:hover {
-      background: #ffffff;
-      border-color: #cbd5e1;
-      transform: translateY(-2px);
-      box-shadow: 0 8px 18px -4px rgba(15, 23, 42, 0.05);
+    .step-item:last-child {
+      border-bottom: none;
+      padding-bottom: 6px;
     }
-
-    /* 步骤图标盒 (含各自专属动画) */
-    .step-icon-wrap {
-      width: 44px;
-      height: 44px;
-      border-radius: 12px;
+    .step-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: #f7f7f8;
+      border: 1px solid #e6e7eb;
+      color: #16181c;
+      font-size: 13px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
-      position: relative;
     }
-    .icon-browser {
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
-      color: #2563eb;
-    }
-    .icon-switch {
-      background: #ecfdf5;
-      border: 1px solid #a7f3d0;
-      color: #059669;
-    }
-    .icon-speed {
-      background: #fef3c7;
-      border: 1px solid #fde68a;
-      color: #d97706;
-    }
-
     .step-content {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
     }
-    .step-title {
-      font-size: 13.5px;
-      font-weight: 600;
-      color: #0f172a;
+    .step-title-row {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
+    }
+    .step-title {
+      font-size: 14.5px;
+      font-weight: 650;
+      color: #16181c;
+      letter-spacing: -0.2px;
     }
     .step-tag {
-      font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 4px;
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #f4f5f7;
+      color: #4b5563;
+      border: 1px solid #e5e7eb;
       font-weight: 500;
     }
-    .tag-blue { background: #dbeafe; color: #1d4ed8; }
-    .tag-green { background: #d1fae5; color: #047857; }
-    .tag-amber { background: #fef3c7; color: #b45309; }
-
     .step-desc {
-      font-size: 12px;
-      color: #475569;
-      line-height: 1.5;
+      font-size: 13.5px;
+      color: #4b5563;
+      line-height: 1.6;
     }
 
     /* 快捷键提示条 */
     .shortcut-callout {
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
+      background: #fafaf9;
+      border: 1px solid #eeeff2;
       border-radius: 12px;
       padding: 14px 18px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
     }
     .shortcut-info {
       display: flex;
       align-items: center;
-      gap: 10px;
-      font-size: 12px;
-      color: #1e40af;
+      gap: 8px;
+      font-size: 13px;
+      color: #4b5563;
       font-weight: 500;
     }
     .kbd {
       background: #ffffff;
-      border: 1px solid #93c5fd;
+      border: 1px solid #d1d5db;
       border-bottom-width: 2px;
       border-radius: 6px;
-      padding: 3px 8px;
+      padding: 2px 7px;
       font-family: inherit;
-      font-size: 11.5px;
+      font-size: 12px;
       font-weight: 700;
-      color: #1d4ed8;
-      box-shadow: 0 1px 2px rgba(37,99,235,0.1);
+      color: #16181c;
+      box-shadow: 0 1px 2px rgba(22, 24, 28, 0.05);
     }
 
-    /* 底部操作 */
+    /* 底部操作区 */
     .footer-actions {
       display: flex;
       justify-content: flex-end;
+      align-items: center;
       gap: 10px;
-      border-top: 1px solid #f1f5f9;
-      padding-top: 18px;
+      border-top: 1px solid #eeeff2;
+      padding-top: 20px;
     }
     .btn {
-      padding: 8px 18px;
+      height: 34px;
+      padding: 0 16px;
       border-radius: 8px;
-      font-size: 12px;
-      font-weight: 500;
+      font-size: 13px;
+      font-weight: 550;
+      font-family: inherit;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       gap: 6px;
-      transition: all 0.15s ease;
+      transition: all 0.16s ease;
       text-decoration: none;
-    }
-    .btn-primary {
-      background: #2563eb;
-      color: #ffffff;
-      border: 1px solid #1d4ed8;
-    }
-    .btn-primary:hover {
-      background: #1d4ed8;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 10px rgba(37, 99, 235, 0.2);
     }
     .btn-secondary {
       background: #ffffff;
-      color: #334155;
-      border: 1px solid #cbd5e1;
+      color: #4b5563;
+      border: 1px solid #e6e7eb;
     }
     .btn-secondary:hover {
-      background: #f8fafc;
-      border-color: #94a3b8;
+      background: #f7f7f8;
+      color: #16181c;
+      border-color: #d1d5db;
+    }
+    .btn-primary {
+      background: #16181c;
+      color: #ffffff;
+      border: 1px solid #16181c;
+    }
+    .btn-primary:hover {
+      background: #2b2f38;
+      border-color: #2b2f38;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(22, 24, 28, 0.15);
     }
   </style>
 </head>
 <body>
   <div class="tutorial-container">
-    <!-- 头部介绍 -->
+    <!-- 头部区域 -->
     <div class="header-area">
-      <div class="hero-icon-box">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.46-3.44 6-7 6s-7.56-2.54-8.5-6Z"/>
-          <path d="M18 12v.5"/>
-          <path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/>
-        </svg>
+      <div class="header-top">
+        <h1>鱼鱼 API 资产监控插件</h1>
+        <span class="header-badge"><i></i>使用指南</span>
       </div>
-      <div class="header-text">
-        <h1>鱼鱼 API 资产监控插件 · 新手使用教程</h1>
-        <p>纯原生本地无感直连 · 多账号秒切 · 智能频率调谐</p>
-      </div>
+      <p>纯原生本地无感直连 · 浏览器凭据自动扫描 · 多账号毫秒级秒切</p>
     </div>
 
-    <!-- 步骤指引 -->
+    <!-- 开放式步骤指引 -->
     <div class="steps-list">
       <!-- 步骤 1 -->
-      <div class="step-card">
-        <div class="step-icon-wrap icon-browser">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect width="20" height="16" x="2" y="4" rx="2"/>
-            <path d="M2 8h20"/>
-            <line x1="6" y1="12" x2="10" y2="12" style="animation: scanBeam 1.8s infinite ease-in-out;"/>
-            <circle cx="16" cy="12" r="1" fill="currentColor"/>
-          </svg>
-        </div>
+      <div class="step-item">
+        <div class="step-num">01</div>
         <div class="step-content">
-          <div class="step-title">
-            <span>第一步：浏览器正常登录</span>
-            <span class="step-tag tag-blue">免输入 Token</span>
+          <div class="step-title-row">
+            <span class="step-title">浏览器正常登录</span>
+            <span class="step-tag">免输入 Token</span>
           </div>
           <div class="step-desc">
-            在 Chrome 或 Edge 浏览器中登录鱼鱼 API 控制台（sub.anzhiyu.com/usage）。插件会自动只读扫描本地存储提取有效 Token，无需手动复制黏贴。
+            在 Chrome 或 Edge 浏览器中登录鱼鱼 API 控制台（sub.anzhiyu.com/usage）。插件会自动只读扫描本地存储提取有效凭据，无需繁琐复制黏贴。
           </div>
         </div>
       </div>
 
       <!-- 步骤 2 -->
-      <div class="step-card">
-        <div class="step-icon-wrap icon-switch">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M16 3h5v5"/>
-            <path d="M4 20L21 3"/>
-            <path d="M21 16v5h-5"/>
-            <path d="M15 15l6 6"/>
-            <circle cx="7" cy="7" r="3" style="animation: chipSwitch 2.4s infinite ease-in-out;"/>
-          </svg>
-        </div>
+      <div class="step-item">
+        <div class="step-num">02</div>
         <div class="step-content">
-          <div class="step-title">
-            <span>第二步：卡片内多账号 0 延迟秒切</span>
-            <span class="step-tag tag-green">多账号共存</span>
+          <div class="step-title-row">
+            <span class="step-title">卡片内多账号秒切</span>
+            <span class="step-tag">多账号共存</span>
           </div>
           <div class="step-desc">
-            卡片右上角横向罗列已登录账号（如不同账号前缀胶囊）。轻点对应胶囊即可无感秒切，可用余额、今日实扣与名下密钥一并即时同步展示。
+            拥有多个账号时，卡片右上角横向罗列前缀标签。轻点对应标签即可无感秒切，可用余额、今日实扣与名下密钥一并即时同步展示。
           </div>
         </div>
       </div>
 
       <!-- 步骤 3 -->
-      <div class="step-card">
-        <div class="step-icon-wrap icon-speed">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" style="animation: gearSpin 12s linear infinite; transform-origin: 12px 12px;"/>
-            <circle cx="12" cy="12" r="3" fill="currentColor"/>
-          </svg>
-        </div>
+      <div class="step-item">
+        <div class="step-num">03</div>
         <div class="step-content">
-          <div class="step-title">
-            <span>第三步：刷新频率灵活调节</span>
-            <span class="step-tag tag-amber">最低 1 秒实时刷新</span>
+          <div class="step-title-row">
+            <span class="step-title">刷新频率与节拍调谐</span>
+            <span class="step-tag">最低 1 秒实时刷新</span>
           </div>
           <div class="step-desc">
             点击顶栏齿轮设置按钮，可按需切换 1秒 / 5秒 / 30秒 / 1分 / 5分。具备智能防封保护：卡片展开时按设定高速刷新，收起时自动降频静默。
@@ -324,7 +278,7 @@
     <!-- 快捷键提示条 -->
     <div class="shortcut-callout">
       <div class="shortcut-info">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/>
           <line x1="12" y1="16" x2="12" y2="12"/>
           <line x1="12" y1="8" x2="12.01" y2="8"/>
@@ -336,10 +290,10 @@
       </div>
     </div>
 
-    <!-- 底部按钮 -->
+    <!-- 底部操作按钮 -->
     <div class="footer-actions">
       <button class="btn btn-secondary" onclick="window.close()">关闭此教程</button>
-      <a class="btn btn-primary" href="https://sub.anzhiyu.com/usage" target="_blank">
+      <a class="btn btn-primary" href="https://sub.anzhiyu.com/usage" target="_blank" rel="noreferrer">
         <span>前往鱼鱼控制台</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
