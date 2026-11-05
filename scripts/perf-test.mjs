@@ -69,10 +69,10 @@ async function boot() {
   Object.defineProperty(window.HTMLElement.prototype, 'offsetHeight', { configurable: true, get() { return 140; } });
 
   const payload = {
-    activeEmail: '87850@qq.com',
+    activeEmail: 'user@example.com',
     accounts: [
-      { email: '87850@qq.com', balance: 12.34, active: true },
-      { email: 'whale.lab@outlook.com', balance: 3.05 },
+      { email: 'user@example.com', balance: 12.34, active: true },
+      { email: 'account-demo@example.org', balance: 3.05 },
       { email: 'backup@example.org', balance: 0.42 }
     ],
     version: '1.2.0',
@@ -210,7 +210,7 @@ console.log('[perf-test] 4) 首屏动画只用合成层属性');
 {
   // transform / opacity 才能交给合成器；动画 width/left/top 会触发布局
   const css = Array.from(container.querySelectorAll('style')).map((s) => s.textContent).join('\n');
-  const frames = css.match(/@keyframes\s+\w+\s*{[^}]*(\{[^}]*\}[^}]*)*}/g) || [];
+  const frames = css.match(/@keyframes\s+\w+\s*{[^}]*({[^}]*}[^}]*)*}/g) || [];
   const layoutProps = /(^|[\s;{])(width|height|left|top|margin|padding)\s*:/;
   const offenders = frames.filter((f) => layoutProps.test(f.split('{').slice(1).join('{')));
   console.log(`  ${offenders.length === 0 ? '\u2713' : '\u2717'} 关键帧动画 ${frames.length} 组，涉及布局属性的 ${offenders.length} 组`);
