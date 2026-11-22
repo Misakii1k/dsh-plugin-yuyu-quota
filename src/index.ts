@@ -5,13 +5,14 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { YuyuApiClient } from './api.js';
-import { createYuyuBalanceTool } from './tool.js';
+import { createYuyuBalanceTool, buildYuyuBalanceToolDescription } from './tool.js';
 import { scanRunningBrowsersForToken, launchAndCaptureToken, openExternal } from './browser-sync.js';
 import { PluginConfig, BalanceSnapshot, RefreshInterval, PluginPreferences, TurnUsageReport, UpdateInfo, WidgetPosition, CredentialHealth } from './types.js';
-import { createSessionTracker } from './session-tracker.js';
+import { createSessionTracker, UserPromptNotice } from './session-tracker.js';
 import { sendDesktopNotification, playSystemAlertSound, NotifySound } from './notify.js';
 import { checkForUpdate, downloadUpdate, installUpdate, getPluginVersion } from './update.js';
 import { createCredentialManager, jwtExpiry, isUnauthorizedLike, refreshWithToken } from './credentials.js';
+import { DEFAULT_SITE, SITES, SITE_IDS, accountKey, normalizeSiteId, parseAccountKey, sameEmail, siteBaseUrl, siteInfo, siteLabel, siteOfBaseUrl, YuyuSiteId } from './sites.js';
 
 export const name = 'dsh-plugin-yuyu-quota';
 /**
@@ -34,6 +35,8 @@ export const API_PREFIX = '/yuyu-quota/api';
 
 export interface SavedAccount {
   email: string;
+  /** 账号所属站点：sub 与 www 是两套独立后端，同一邮箱可以是两个账号 */
+  site: YuyuSiteId;
   token: string;
   balance: number;
   lastSyncedAt: string;
@@ -53,6 +56,7 @@ export interface SavedAccount {
 }
 
 export interface MultiAccountStore {
+  /** 当前激活账号的唯一键：`<site>:<email>`（历史文件里的裸邮箱按默认站点解析） */
   activeEmail: string;
   lastBrowserIat: number;
   refreshInterval: RefreshInterval;
@@ -80,9 +84,11 @@ export function defaultPreferences(): PluginPreferences {
     notifyOnComplete: true,
     notifySound: 'Notification.Reminder',
     notifySubagentMute: true,
+    notifyOnUserPrompt: true,
     notifyOnFailure: true,
     notifyOnlyWhenUnfocused: false,
     reportOnComplete: true,
+    hideBalance: false,
     updateCheck: true,
     updateFeedUrl: 'https://dsh-plugin-yuyu-quota-update.pages.dev',
     githubRepo: 'Misakii1k/dsh-plugin-yuyu-quota',
@@ -134,9 +140,11 @@ export function sanitizePreferences(input: any, base: PluginPreferences): Plugin
   const bools: Array<keyof PluginPreferences> = [
     'notifyOnComplete',
     'notifySubagentMute',
+    'notifyOnUserPrompt',
     'notifyOnFailure',
     'notifyOnlyWhenUnfocused',
     'reportOnComplete',
+    'hideBalance',
     'updateCheck'
   ];
   for (const key of bools) {
@@ -234,7 +242,7 @@ export function loadAccountStore(): MultiAccountStore {
     lastBrowserIat: 0,
     refreshInterval: '30s',
     alertThreshold: 2.0,
-    baseUrl: 'https://sub.anzhiyu.com',
+    baseUrl: siteBaseUrl(DEFAULT_SITE),
     accounts: [],
     preferences: defaultPreferences()
   };
@@ -270,15 +278,20 @@ export function loadAccountStore(): MultiAccountStore {
       if (Array.isArray(raw.accounts)) {
         for (const acc of raw.accounts) {
           if (acc && acc.email && acc.token) {
-            const idx = store.accounts.findIndex(a => a.email === acc.email);
-            if (idx >= 0) store.accounts[idx] = { ...store.accounts[idx], ...acc };
-            else store.accounts.push(acc);
+            // 旧文件没有 site 字段：一律补成默认站点，保证后续 identity 不会漏判
+            const site: YuyuSiteId = normalizeSiteId(acc.site) || DEFAULT_SITE;
+            const item: SavedAccount = { ...acc, site };
+            const idx = store.accounts.findIndex(a => a.site === site && sameEmail(a.email, acc.email));
+            if (idx >= 0) store.accounts[idx] = { ...store.accounts[idx], ...item };
+            else store.accounts.push(item);
           }
         }
       } else if (raw.token && raw.cachedEmail) {
-        const idx = store.accounts.findIndex(a => a.email === raw.cachedEmail);
+        const site: YuyuSiteId = normalizeSiteId(raw.site || raw.activeSite) || DEFAULT_SITE;
+        const idx = store.accounts.findIndex(a => a.site === site && sameEmail(a.email, raw.cachedEmail));
         const item: SavedAccount = {
           email: raw.cachedEmail,
+          site,
           token: raw.token,
           balance: Number(raw.cachedBalance || 0),
           lastSyncedAt: raw.lastSyncedAt || new Date().toISOString()
@@ -289,7 +302,78 @@ export function loadAccountStore(): MultiAccountStore {
     } catch {}
   }
 
+  // 历史自愈迁移可能留下同键重复账号：加载时先收敛，再做 activeEmail 迁移
+  store.accounts = dedupeAccounts(store.accounts);
+
+  // 历史 activeEmail 是裸邮箱：解析成 `<site>:<email>` 并确认该账号存在。
+  // 显式带站点前缀的 key 不允许跨站兜底，避免把新站账号静默改成旧站同邮箱。
+  const activeRaw = String(store.activeEmail || '').trim();
+  const activeParsed = parseOrNull(activeRaw);
+  if (activeParsed) {
+    const exact = store.accounts.find(a => a.site === activeParsed.site && sameEmail(a.email, activeParsed.email));
+    const hasSitePrefix = activeRaw.includes(':') && normalizeSiteId(activeRaw.slice(0, activeRaw.indexOf(':'))) !== null;
+    const legacy = hasSitePrefix ? undefined : store.accounts.find(a => sameEmail(a.email, activeParsed.email));
+    const found = exact || legacy;
+    store.activeEmail = found ? accountKey(found.site, found.email) : accountKey(activeParsed.site, activeParsed.email);
+  } else if (store.accounts[0]) {
+    store.activeEmail = accountKey(store.accounts[0].site, store.accounts[0].email);
+  }
+
   return store;
+}
+
+/**
+ * 账号库去重：同一 `<site>:<email>` 只保留一条。
+ *
+ * 1.3.0 的自愈迁移在「目标站点已有同邮箱账号」时会留下重复键；
+ * 这些重复项会让切号/删除命中错误的那一条，也会让 activeEmail 与快照错位。
+ * 选择规则：优先 refreshedAt 更新的凭据，其次 lastSyncedAt 更新的数据；
+ * 被合并掉的记录如果带有 refreshToken，而保留项没有，则补过去（同账号同站点）。
+ */
+export function dedupeAccounts(accounts: SavedAccount[]): SavedAccount[] {
+  const byKey = new Map<string, SavedAccount>();
+  const freshness = (a: SavedAccount): number => {
+    const refreshed = Number(a.refreshedAt) || 0;
+    if (refreshed > 0) return refreshed;
+    const synced = Date.parse(String(a.lastSyncedAt || '')) || 0;
+    return synced;
+  };
+
+  for (const acc of accounts) {
+    if (!acc || !acc.email) continue;
+    const key = accountKey(acc.site, acc.email);
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, { ...acc });
+      continue;
+    }
+    const keep = freshness(acc) >= freshness(prev) ? acc : prev;
+    const drop = keep === acc ? prev : acc;
+    const merged: SavedAccount = { ...drop, ...keep };
+    // 凭据字段不能凭空混搭，但同账号缺 rt 时可以从重复项补一枚可用的
+    if (!merged.refreshToken && drop.refreshToken) merged.refreshToken = drop.refreshToken;
+    if (!merged.accessTokenExpiresAt && drop.accessTokenExpiresAt) merged.accessTokenExpiresAt = drop.accessTokenExpiresAt;
+    if (!merged.refreshTokenExpiresAt && drop.refreshTokenExpiresAt) merged.refreshTokenExpiresAt = drop.refreshTokenExpiresAt;
+    // 余额快照取 lastSyncedAt 更新的一份，避免保留下来的凭据配着旧余额
+    const newerSnap = (Date.parse(String(acc.lastSyncedAt || '')) || 0) >= (Date.parse(String(prev.lastSyncedAt || '')) || 0) ? acc : prev;
+    if (newerSnap.snapshot) {
+      merged.snapshot = newerSnap.snapshot;
+      merged.balance = newerSnap.balance;
+      merged.lastTotalRecharged = newerSnap.lastTotalRecharged;
+      merged.lastSyncedAt = newerSnap.lastSyncedAt;
+      merged.balanceChangedAt = newerSnap.balanceChangedAt;
+    }
+    byKey.set(key, merged);
+  }
+  return [...byKey.values()];
+}
+
+/** 解析 activeEmail 这类身份串；非法返回 null */
+function parseOrNull(value: string | undefined): { site: YuyuSiteId; email: string } | null {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  // 复用 sites.ts 的唯一实现，避免两套解析在大小写/前缀规则上分叉
+  return parseAccountKey(raw);
 }
 
 /**
@@ -317,9 +401,14 @@ function writeFileAtomic(target: string, content: string): boolean {
 }
 
 export function saveAccountStore(store: MultiAccountStore) {
-  const activeAcc = store.accounts.find(a => a.email === store.activeEmail) || store.accounts[0];
+  const activeParsed = parseOrNull(store.activeEmail);
+  const activeAcc = (activeParsed
+    ? store.accounts.find(a => a.site === activeParsed.site && sameEmail(a.email, activeParsed.email))
+    : undefined) || store.accounts[0];
   const payload = {
-    activeEmail: store.activeEmail || activeAcc?.email || '',
+    activeEmail: activeAcc ? accountKey(activeAcc.site, activeAcc.email) : '',
+    /** 兼容字段：老版本 DSH 头部仍按裸邮箱展示 */
+    activeSite: activeAcc?.site || DEFAULT_SITE,
     lastBrowserIat: store.lastBrowserIat || 0,
     token: activeAcc?.token || '',
     cachedEmail: activeAcc?.email || '',
@@ -331,6 +420,7 @@ export function saveAccountStore(store: MultiAccountStore) {
     preferences: store.preferences,
     accounts: store.accounts.map(a => ({
       email: a.email,
+      site: a.site,
       token: a.token,
       balance: a.balance,
       lastSyncedAt: a.lastSyncedAt,
@@ -571,11 +661,55 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   // 插件配置（cordis.patch.yml）里的偏好优先级高于本地文件，但仍只走白名单收敛
   store.preferences = sanitizePreferences(initialConfig as any, store.preferences);
 
-  const getActiveAccount = (): SavedAccount | undefined => {
-    return store.accounts.find(a => a.email === store.activeEmail) || store.accounts[0];
+  /**
+   * 自定义 API 地址兼容：1.2.x 允许用户把 baseUrl 指向自建/反代地址。
+   * 双站点上线后，官方域名按账号自己的站点走；只有认不出来的自定义地址
+   * 才作为「旧站」的兜底，否则历史自建部署会被静默改回官方 sub。
+   */
+  const configuredBaseUrl = String(store.baseUrl || '').trim().replace(/\/+$/, '');
+  const customBaseUrl = /^https?:\/\//i.test(configuredBaseUrl) && !siteOfBaseUrl(configuredBaseUrl)
+    ? configuredBaseUrl
+    : '';
+  const baseUrlForSite = (site: YuyuSiteId): string => (
+    site === DEFAULT_SITE && customBaseUrl ? customBaseUrl : siteBaseUrl(site)
+  );
+
+  /** 找账号：支持 `<site>:<email>` 与历史裸邮箱两种写法 */
+  const findAccount = (target?: string): SavedAccount | undefined => {
+    const raw = String(target || '').trim();
+    const parsed = parseOrNull(raw);
+    if (!parsed) return undefined;
+    const exact = store.accounts.find(a => a.site === parsed.site && sameEmail(a.email, parsed.email));
+    if (exact) return exact;
+    // 显式站点的 key 不允许跨站兜底：`www:a@x` 缺失时若回落到 `sub:a@x`，
+    // 切号/续期会把旧站账号当成新站账号操作（两站 token 不通用）。
+    const hasSitePrefix = raw.includes(':') && normalizeSiteId(raw.slice(0, raw.indexOf(':'))) !== null;
+    if (hasSitePrefix) return undefined;
+    // 历史裸邮箱：没有站点信息，按同邮箱匹配
+    return store.accounts.find(a => sameEmail(a.email, parsed.email));
   };
 
-  const client = new YuyuApiClient(getActiveAccount()?.token || '', store.baseUrl);
+  const getActiveAccount = (): SavedAccount | undefined => {
+    const active = findAccount(store.activeEmail);
+    if (active) return active;
+    // activeEmail 失效（历史脏数据 / 账号被外部删掉）时回落到第一个账号，
+    // 同时把指针纠正过来，避免响应里 activeEmail 与实际快照指向不同账号。
+    const fallback = store.accounts[0];
+    if (fallback) {
+      const corrected = accountKey(fallback.site, fallback.email);
+      if (store.activeEmail !== corrected) store.activeEmail = corrected;
+    }
+    return fallback;
+  };
+
+  /** 当前激活账号所属站点（决定默认请求地址） */
+  const getActiveSite = (): YuyuSiteId => getActiveAccount()?.site || siteOfBaseUrl(store.baseUrl) || DEFAULT_SITE;
+
+  const client = new YuyuApiClient(
+    getActiveAccount()?.token || '',
+    baseUrlForSite(getActiveSite()),
+    getActiveSite()
+  );
 
   // 账号库写盘：日常刷新走节流，凭据变更走立即落盘
   const storeWriter = createStoreWriter(store, logger);
@@ -585,19 +719,25 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   // —— 凭据自动续期 ——
   // access token 约 24 小时过期；有 refresh token 就能无感续期，不再需要用户 1~2 天重登。
   const credentialManager = createCredentialManager({
-    get: (email) => {
-      const acc = store.accounts.find(a => a.email === email);
+    get: (key) => {
+      const acc = findAccount(key);
       if (!acc) return undefined;
       return {
         email: acc.email,
+        site: acc.site,
         accessToken: acc.token,
         refreshToken: acc.refreshToken,
         accessTokenExpiresAt: acc.accessTokenExpiresAt || jwtExpiry(acc.token),
         refreshTokenExpiresAt: acc.refreshTokenExpiresAt
       };
     },
+    /** 续期请求必须打到账号自己的站点（自定义地址只兜底旧站） */
+    baseUrlFor: (key) => baseUrlForSite(findAccount(key)?.site || getActiveSite()),
+    /** 续期失败时提示用户去对应站点重新登录 */
+    loginUrlFor: (key) => siteInfo(findAccount(key)?.site || getActiveSite()).usageUrl,
     set: (creds) => {
-      const idx = store.accounts.findIndex(a => a.email === creds.email);
+      const site = (creds.site as YuyuSiteId | undefined) || getActiveSite();
+      const idx = store.accounts.findIndex(a => a.site === site && sameEmail(a.email, creds.email));
       if (idx < 0) return;
       const acc = store.accounts[idx];
       acc.token = creds.accessToken;
@@ -605,7 +745,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       if (creds.accessTokenExpiresAt) acc.accessTokenExpiresAt = creds.accessTokenExpiresAt;
       if (creds.refreshTokenExpiresAt) acc.refreshTokenExpiresAt = creds.refreshTokenExpiresAt;
       acc.refreshedAt = Date.now();
-      if (store.activeEmail === acc.email) client.updateToken(acc.token);
+      if (store.activeEmail === accountKey(acc.site, acc.email)) client.updateToken(acc.token);
       store.credentialsDegraded = false;
       // 凭据必须立刻落盘：refresh token 一次性，丢了就只能重新登录
       persistNow();
@@ -615,16 +755,18 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       const { all } = scanLocalLevelDBTokens();
       if (all.length === 0) return null;
       // 优先返回当前激活账号，没有再退回最新登录的那个
-      const preferred = all.find(t => t.email === store.activeEmail) || all[0];
+      const active = getActiveAccount();
+      const preferred = all.find(t => active && t.site === active.site && sameEmail(t.email, active.email)) || all[0];
       return {
         email: preferred.email,
+        site: preferred.site,
         accessToken: preferred.token,
         refreshToken: preferred.refreshToken,
         accessTokenExpiresAt: preferred.exp * 1000
       };
     },
     logger
-  }, store.baseUrl);
+  }, baseUrlForSite(getActiveSite()));
 
   /** 最近一次快照（供会话跟踪器取轮次基线，避免每次轮次都打网络） */
   let cachedSnapshot: BalanceSnapshot | null = getActiveAccount()?.snapshot || null;
@@ -636,10 +778,17 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   let lastUpdateInfo: UpdateInfo | null = null;
   let updateInFlight: Promise<UpdateInfo> | null = null;
 
-  const upsertAccount = (token: string, snap: BalanceSnapshot, setActive = true, extra?: Partial<SavedAccount>) => {
+  const upsertAccount = (
+    token: string,
+    snap: BalanceSnapshot,
+    setActive = true,
+    extra?: Partial<SavedAccount>,
+    siteHint?: YuyuSiteId
+  ) => {
     if (!snap.email) return;
+    const site: YuyuSiteId = normalizeSiteId(siteHint) || normalizeSiteId(snap.site) || getActiveSite();
     const now = new Date().toISOString();
-    const existingIdx = store.accounts.findIndex(a => a.email === snap.email);
+    const existingIdx = store.accounts.findIndex(a => a.site === site && sameEmail(a.email, snap.email));
     const previous = existingIdx >= 0 ? store.accounts[existingIdx] : undefined;
 
     // 余额 / 累计充值发生变化时，记录变化时刻，便于确认“充值是否已到账”
@@ -650,6 +799,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
     const entry: SavedAccount = {
       email: snap.email,
+      site,
       token,
       balance: snap.balance,
       lastSyncedAt: now,
@@ -667,14 +817,17 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       ...(extra?.refreshToken ? { refreshToken: extra.refreshToken } : {}),
       ...(extra?.accessTokenExpiresAt ? { accessTokenExpiresAt: extra.accessTokenExpiresAt } : {})
     };
+    // 站点写在快照里，前端据此展示徽标
     if (existingIdx >= 0) {
       store.accounts[existingIdx] = entry;
     } else {
       store.accounts.unshift(entry);
     }
     if (setActive || !store.activeEmail) {
-      store.activeEmail = snap.email;
+      store.activeEmail = accountKey(site, snap.email);
       client.updateToken(token);
+      client.updateSite(site);
+      client.updateBaseUrl(baseUrlForSite(site));
     }
     persist();
   };
@@ -690,15 +843,47 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
    * 3) 续期成功的新凭据已经落盘。
    */
   const fetchSnapshotWithCredential = async (acc: SavedAccount): Promise<BalanceSnapshot> => {
+    // 每个账号只认自己站点的地址：sub 的 token 打到 www 一律 401
     const run = async (token: string) => {
-      const scoped = new YuyuApiClient(token, store.baseUrl);
+      const scoped = new YuyuApiClient(token, baseUrlForSite(acc.site), acc.site);
       return await scoped.getBalanceSnapshot(store.alertThreshold);
     };
 
     try {
-      const snap = await credentialManager.withRetry(acc.email, run);
+      let snap = await credentialManager.withRetry(accountKey(acc.site, acc.email), run);
+      // 自愈：升级到双站点时，历史账号一律先按 sub 记账，但它的 token 可能其实属于
+      // www。这里在本站点 401 时用同一枚 token 试另一个站点，成功就把账号迁过去。
+      if (!snap.success && snap.unauthorized) {
+        const otherSite = SITE_IDS.find(id => id !== acc.site);
+        if (otherSite) {
+          try {
+            const probe = new YuyuApiClient(acc.token, baseUrlForSite(otherSite), otherSite);
+            const moved = await probe.getBalanceSnapshot(store.alertThreshold);
+            if (moved.success) {
+              const oldKey = accountKey(acc.site, acc.email);
+              const newKey = accountKey(otherSite, acc.email);
+              // 目标站点若已存在同邮箱账号，保留当前这枚「已被证明可用」的 token，
+              // 合并对方可能有用的 refresh token，并移除重复项 —— 否则会留下两条
+              // 同键账号，后续删除/切号会互相打架。
+              const duplicates = store.accounts.filter(a => a !== acc && accountKey(a.site, a.email) === newKey);
+              if (duplicates.length > 0) {
+                const donorRt = duplicates.find(d => d.refreshToken)?.refreshToken;
+                if (!acc.refreshToken && donorRt) acc.refreshToken = donorRt;
+                store.accounts = store.accounts.filter(a => !duplicates.includes(a));
+              }
+              acc.site = otherSite;
+              if (store.activeEmail === oldKey) store.activeEmail = newKey;
+              logger?.info?.(`[鱼鱼API] ${acc.email} 的凭据属于 ${siteLabel(otherSite)}，已迁移站点`);
+              persistNow();
+              snap = moved;
+            }
+          } catch {
+            // 另一个站点也不通：保持原样，走原来的失败处理
+          }
+        }
+      }
       // withRetry 成功后，store 里的 token 可能已经被续期，同步回内存中的 acc
-      const latest = store.accounts.find(a => a.email === acc.email);
+      const latest = store.accounts.find(a => a.site === acc.site && sameEmail(a.email, acc.email));
       if (latest && latest.token && latest.token !== acc.token) acc.token = latest.token;
       return snap;
     } catch (err: any) {
@@ -749,22 +934,21 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     targetEmail?: string,
     options: { others?: boolean } = {}
   ): Promise<BalanceSnapshot | null> => {
-    const acc = targetEmail
-      ? (store.accounts.find(a => a.email === targetEmail) || getActiveAccount())
-      : getActiveAccount();
+    const acc = targetEmail ? findAccount(targetEmail) : getActiveAccount();
     if (!acc) return null;
 
-    const isActive = acc.email === store.activeEmail;
+    const accKey = accountKey(acc.site, acc.email);
+    const isActive = accKey === store.activeEmail;
     const snap = await fetchSnapshotWithCredential(acc);
     if (snap.success) {
-      upsertAccount(acc.token, snap, isActive);
+      upsertAccount(acc.token, snap, isActive, undefined, acc.site);
     }
 
     // 并发刷新其他保存账号的最新数据（同一账号的去重交给 withRetry 的 in-flight 合并）
     if (options.others !== false) {
       await Promise.allSettled(
         store.accounts
-          .filter(a => a.email !== acc.email)
+          .filter(a => accountKey(a.site, a.email) !== accKey)
           .map(async (other) => {
             const otherSnap = await fetchSnapshotWithCredential(other);
             if (otherSnap.success) {
@@ -798,22 +982,26 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
   const syncFromBrowser = async (forceCapture = false, manualToken?: string, forceSwitch = false) => {
     if (manualToken && manualToken.trim()) {
       const clean = manualToken.trim();
-      const tempClient = new YuyuApiClient(clean, store.baseUrl);
-      const snap = await tempClient.getBalanceSnapshot(store.alertThreshold);
-      if (snap.success) {
-        upsertAccount(clean, snap, true);
+      // 手动贴的 token 不带站点信息：先用当前站点验证，失败再试另一个站点
+      const candidates: YuyuSiteId[] = [getActiveSite(), ...SITE_IDS.filter(id => id !== getActiveSite())];
+      for (const site of candidates) {
+        const tempClient = new YuyuApiClient(clean, baseUrlForSite(site), site);
+        const snap = await tempClient.getBalanceSnapshot(store.alertThreshold);
+        if (!snap.success) continue;
+        upsertAccount(clean, snap, true, undefined, site);
         return {
           success: true,
           browser: '手动Token',
+          site,
           email: snap.email,
           balance: snap.balance,
           snapshot: snap,
-          message: `已验证并切换至账号 ${snap.email} ($${snap.balance.toFixed(2)})`
+          message: `已验证并切换至账号 ${snap.email} (${siteLabel(site)} · $${snap.balance.toFixed(2)})`
         };
       }
       return {
         success: false,
-        message: snap.error || 'Token 无效或已过期'
+        message: 'Token 无效或已过期（旧 / 新两个站点都试过了）'
       };
     }
 
@@ -822,16 +1010,18 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     // 正常扫描找不到有效 access token 时，退一步找「已过期但还留着 refresh token」的账号。
     // 这是「隔一两天就得重新登录」的主要挽回路径：access token 24h 就过期，
     // 而浏览器里那份 rt 往往还有效，用它可以无感换回一对新凭据。
+    let recoveredCount = 0;
     if (!scanRes.success) {
       try {
         const { scanExpiredAccountsWithRefreshToken } = await import('./browser-sync.js');
         const recoverable = scanExpiredAccountsWithRefreshToken();
+        let activated = false;
         for (const item of recoverable) {
           if (!item.refreshToken) continue;
-          const recovered = await refreshWithToken(item.refreshToken, store.baseUrl);
+          const recovered = await refreshWithToken(item.refreshToken, baseUrlForSite(item.site));
           if (!recovered.ok || !recovered.credentials) continue;
 
-          const existing = store.accounts.find(a => a.email === item.email);
+          const existing = store.accounts.find(a => a.site === item.site && sameEmail(a.email, item.email));
           if (existing) {
             existing.token = recovered.credentials.accessToken;
             existing.refreshToken = recovered.credentials.refreshToken;
@@ -841,6 +1031,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
           } else {
             store.accounts.push({
               email: item.email,
+              site: item.site,
               token: recovered.credentials.accessToken,
               refreshToken: recovered.credentials.refreshToken,
               balance: 0,
@@ -850,10 +1041,16 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
               refreshedAt: Date.now()
             });
           }
-          store.activeEmail = item.email;
+          // 恢复列表按 iat 从新到旧：最多只切一次，避免循环结束时反而切到最旧账号。
+          // 仅在「当前没有有效激活账号」或用户显式要求跟随浏览器最新登录时切号。
+          if (!activated && (forceSwitch || !findAccount(store.activeEmail))) {
+            store.activeEmail = accountKey(item.site, item.email);
+            activated = true;
+          }
           store.credentialsDegraded = false;
+          recoveredCount += 1;
           persistNow();
-          logger.info?.(`[鱼鱼API] 已用浏览器的 refresh token 恢复账号 ${item.email}`);
+          logger.info?.(`[鱼鱼API] 已用浏览器的 refresh token 恢复账号 ${item.email}（${siteLabel(item.site)}）`);
         }
       } catch (err: any) {
         logger.warn?.(`[鱼鱼API] 过期账号恢复失败: ${err?.message || err}`);
@@ -861,14 +1058,14 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     }
 
     if (!scanRes.success && forceCapture) {
-      scanRes = await launchAndCaptureToken();
+      scanRes = await launchAndCaptureToken(90_000, getActiveSite());
     }
 
     if (scanRes.success && scanRes.token) {
       // 1. 将浏览器中发现的所有有效账号同步进账号库（含 refresh token）
       if (Array.isArray(scanRes.allDiscovered)) {
         for (const disc of scanRes.allDiscovered) {
-          const existing = store.accounts.find(a => a.email === disc.email);
+          const existing = store.accounts.find(a => a.site === disc.site && sameEmail(a.email, disc.email));
           const expiresAt = typeof disc.exp === 'number' ? disc.exp * 1000 : undefined;
           if (existing) {
             existing.token = disc.token;
@@ -881,6 +1078,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
           } else {
             store.accounts.push({
               email: disc.email,
+              site: disc.site,
               token: disc.token,
               balance: 0,
               lastSyncedAt: new Date().toISOString(),
@@ -901,7 +1099,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       }
 
       if (shouldSwitchToBrowserLatest && scanRes.email) {
-        store.activeEmail = scanRes.email;
+        store.activeEmail = accountKey(scanRes.site || getActiveSite(), scanRes.email);
       }
 
       const activeSnap = await refreshAccount(store.activeEmail);
@@ -927,7 +1125,9 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       email: currentSnap?.email,
       balance: currentSnap?.balance,
       snapshot: currentSnap,
-      message: scanRes.message || '已刷新当前选中账号数据'
+      message: recoveredCount > 0
+        ? `已用浏览器的 refresh token 恢复 ${recoveredCount} 个过期账号`
+        : (scanRes.message || '已刷新当前选中账号数据')
     };
   };
 
@@ -936,6 +1136,7 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     if (!acc) return null;
     const expiresAt = acc.accessTokenExpiresAt || jwtExpiry(acc.token);
     return {
+      site: acc.site,
       email: acc.email,
       hasRefreshToken: Boolean(acc.refreshToken),
       accessTokenExpiresAt: expiresAt,
@@ -948,19 +1149,27 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
   const buildResponsePayload = (extra: Record<string, any> = {}) => {
     const activeAcc = getActiveAccount();
+    const activeSite = activeAcc?.site || getActiveSite();
     return {
       ok: true,
       activeEmail: store.activeEmail,
+      activeSite,
+      /** 充值 / 使用记录页地址：前端按钮与兜底跳转都按当前站点走 */
+      rechargeUrl: siteInfo(activeSite).rechargeUrl,
+      usageUrl: siteInfo(activeSite).usageUrl,
       refreshInterval: store.refreshInterval || '30s',
       snapshot: activeAcc?.snapshot || null,
       /** 凭据健康度：前端据此显示「自动续期中，还可撑 X 小时」 */
       credential: buildCredentialHealth(),
       accounts: store.accounts.map(a => ({
         email: a.email,
+        site: a.site,
+        siteLabel: siteLabel(a.site),
+        key: accountKey(a.site, a.email),
         balance: a.balance,
         lastSyncedAt: a.lastSyncedAt,
         balanceChangedAt: a.balanceChangedAt || null,
-        active: a.email === store.activeEmail,
+        active: accountKey(a.site, a.email) === store.activeEmail,
         hasRefreshToken: Boolean(a.refreshToken),
         snapshot: a.snapshot || null
       })),
@@ -998,22 +1207,67 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     const titlePrefix = report.reason === 'completed'
       ? '任务完成'
       : (report.reason === 'error' ? '任务失败' : '任务中断');
+    // 子 Agent 的通知（用户显式打开开关时才会走到这里）要标明来源，
+    // 否则一次主任务里几个子 Agent 各自弹窗时会分不清是谁完成的。
+    const subagentTag = report.isSubagent ? '子 Agent · ' : '';
 
     const lines = [
       `本轮 ${tokens.toLocaleString('en-US')} Tokens · 实扣 ${quotaText}`,
       `会话累计 ${report.sessionTokens.toLocaleString('en-US')} Tokens · $${report.sessionQuota.toFixed(4)}`
     ];
     if (typeof report.balanceAfter === 'number') {
-      lines.push(`当前余额 $${report.balanceAfter.toFixed(2)}`);
+      lines.push(prefs.hideBalance ? '当前余额 已隐藏' : `当前余额 $${report.balanceAfter.toFixed(2)}`);
     }
 
     const customSoundPath = resolveSoundFilePath(prefs.soundEffect);
     await sendDesktopNotification({
-      title: `${titlePrefix} · ${report.sessionTitle}`.slice(0, 110),
+      title: `${subagentTag}${titlePrefix} · ${report.sessionTitle}`.slice(0, 110),
       body: lines.join('\n'),
       sound: prefs.soundEffect === 'none' ? false : (customSoundPath ? false : (prefs.notifySound === 'none' ? false : (prefs.notifySound as NotifySound))),
       customSoundPath,
       launch: 'dsh://open'
+    });
+  };
+
+  /** 已经提示过的「等你选择」请求，避免同一弹窗因事件重放重复通知 */
+  const notifiedPromptKeys = new Set<string>();
+
+  /**
+   * 弹出选项（权限审批 / 问答选项 / 计划确认）时发系统通知。
+   *
+   * 这类弹窗会一直阻塞 Agent，用户离开电脑时最需要提醒；
+   * 子 Agent 仍沿用 notifySubagentMute，避免一次主任务刷屏。
+   */
+  const notifyUserPrompt = async (notice: UserPromptNotice) => {
+    const prefs = store.preferences;
+    if (prefs.notifyOnUserPrompt === false) return;
+    if (notice.isSubagent && prefs.notifySubagentMute) return;
+
+    const mode = prefs.notifyMode || (prefs.notifyOnComplete ? 'both' : 'off');
+    if (mode !== 'both' && mode !== 'windows') return;
+
+    const dedupeKey = `${notice.sessionId}:${notice.requestId}`;
+    if (notifiedPromptKeys.has(dedupeKey)) return;
+    notifiedPromptKeys.add(dedupeKey);
+    if (notifiedPromptKeys.size > 200) notifiedPromptKeys.clear();
+
+    const action = notice.kind === 'approval'
+      ? `工具 ${notice.toolName || '操作'} 等待你的批准`
+      : notice.toolName === 'exit_plan_mode'
+        ? '计划等待你确认'
+        : '有一个问题等待你选择';
+
+    const lines = [action, `会话：${notice.sessionTitle}`];
+    if (notice.reason) lines.push(`原因：${notice.reason}`);
+
+    const customSoundPath = resolveSoundFilePath(prefs.soundEffect);
+    await sendDesktopNotification({
+      title: `等待你的选择 · ${notice.sessionTitle}`.slice(0, 110),
+      body: lines.join('\n'),
+      sound: prefs.soundEffect === 'none' ? false : (customSoundPath ? false : (prefs.notifySound === 'none' ? false : (prefs.notifySound as NotifySound))),
+      customSoundPath,
+      launch: 'dsh://open',
+      reason: `user-prompt:${notice.kind}`
     });
   };
 
@@ -1029,6 +1283,9 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     onReport: async (report) => {
       recordTurnReport(report);
       await notifyTurnReport(report).catch(() => {});
+    },
+    onUserPrompt: async (notice) => {
+      await notifyUserPrompt(notice).catch(() => {});
     },
     logger
   });
@@ -1112,6 +1369,13 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
           return;
         }
 
+        // 指定了账号但不存在时必须 404：不能悄悄返回当前账号的数据，
+        // 那会让前端把 A 的余额显示成 B 的。
+        if (targetEmail && !findAccount(targetEmail)) {
+          sendJson(res, 404, { ok: false, message: `未找到账号 ${targetEmail}` });
+          return;
+        }
+
         await refreshAccount(targetEmail);
         sendJson(res, 200, buildResponsePayload());
         return;
@@ -1130,16 +1394,24 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
       if (req.method === 'POST' && route === '/switch') {
         const body = await readJsonBody(req);
-        const targetEmail = String(body?.email || '').trim();
-        const found = store.accounts.find(a => a.email === targetEmail);
+        // 同一邮箱可能同时存在于旧站与新站：优先用完整的 `<site>:<email>` key，
+        // 只有老客户端没传 key 时才退回 email（会落到默认旧站）。
+        const key = String(body?.key || '').trim();
+        const email = String(body?.email || '').trim();
+        const siteHint = normalizeSiteId(body?.site);
+        const targetEmail = key || (siteHint && email ? accountKey(siteHint, email) : email);
+        const found = findAccount(targetEmail);
         if (!found) {
           sendJson(res, 404, { ok: false, message: `未找到账号 ${targetEmail}` });
           return;
         }
-        store.activeEmail = found.email;
-        await refreshAccount(found.email);
+        store.activeEmail = accountKey(found.site, found.email);
+        client.updateToken(found.token);
+        client.updateSite(found.site);
+        client.updateBaseUrl(baseUrlForSite(found.site));
+        await refreshAccount(store.activeEmail);
         sendJson(res, 200, buildResponsePayload({
-          message: `已切换至账号 ${found.email}`
+          message: `已切换至账号 ${found.email}（${siteLabel(found.site)}）`
         }));
         return;
       }
@@ -1166,19 +1438,28 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
       if (req.method === 'POST' && route === '/remove') {
         const body = await readJsonBody(req);
-        const targetEmail = String(body?.email || '').trim();
+        const targetEmail = String(body?.key || body?.email || '').trim();
         if (store.accounts.length <= 1) {
           sendJson(res, 400, { ok: false, message: '至少需要保留一个账号' });
           return;
         }
-        store.accounts = store.accounts.filter(a => a.email !== targetEmail);
-        if (store.activeEmail === targetEmail) {
-          store.activeEmail = store.accounts[0].email;
+        const target = findAccount(targetEmail);
+        if (!target) {
+          sendJson(res, 404, { ok: false, message: `未找到账号 ${targetEmail}` });
+          return;
+        }
+        const targetKey = accountKey(target.site, target.email);
+        store.accounts = store.accounts.filter(a => accountKey(a.site, a.email) !== targetKey);
+        if (store.activeEmail === targetKey) {
+          store.activeEmail = accountKey(store.accounts[0].site, store.accounts[0].email);
+          client.updateToken(store.accounts[0].token);
+          client.updateSite(store.accounts[0].site);
+          client.updateBaseUrl(baseUrlForSite(store.accounts[0].site));
         }
         persistNow();
         await refreshAccount(store.activeEmail);
         sendJson(res, 200, buildResponsePayload({
-          message: `已移除账号 ${targetEmail}`
+          message: `已移除账号 ${target.email}（${siteLabel(target.site)}）`
         }));
         return;
       }
@@ -1372,8 +1653,11 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       }
 
       if (req.method === 'POST' && route === '/open-topup') {
-        if (openExternal('https://sub.anzhiyu.com/recharge-center')) {
-          sendJson(res, 200, { ok: true, message: '已在浏览器中打开充值中心' });
+        // 充值页必须跟着账号走：两个站点是两套钱包
+        const body = await readJsonBody(req);
+        const site = normalizeSiteId(body?.site) || getActiveSite();
+        if (openExternal(siteInfo(site).rechargeUrl)) {
+          sendJson(res, 200, { ok: true, message: `已在浏览器中打开${siteLabel(site)}站充值中心` });
         } else {
           sendJson(res, 500, { ok: false, message: '打开充值中心失败' });
         }
@@ -1384,23 +1668,24 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
       if (req.method === 'POST' && route === '/credential/refresh') {
         const body = await readJsonBody(req);
         const targetEmail = String(body?.email || store.activeEmail || '').trim();
-        const acc = store.accounts.find(a => a.email === targetEmail);
+        const acc = findAccount(targetEmail);
         if (!acc) {
           sendJson(res, 404, { ok: false, message: `未找到账号 ${targetEmail}` });
           return;
         }
-        const token = await credentialManager.ensureFresh(acc.email, true);
+        const accKey = accountKey(acc.site, acc.email);
+        const token = await credentialManager.ensureFresh(accKey, true);
         if (!token) {
           sendJson(res, 200, {
             ok: false,
             credential: buildCredentialHealth(),
             message: acc.refreshToken
               ? '自动续期失败：refresh token 可能已过期，请在浏览器重新登录后点「从浏览器同步」'
-              : '该账号没有 refresh token，无法自动续期：请先在浏览器登录 sub.anzhiyu.com 并点「从浏览器同步」'
+              : `该账号没有 refresh token，无法自动续期：请先在浏览器登录 ${siteInfo(acc.site).usageUrl} 并点「从浏览器同步」`
           });
           return;
         }
-        const snap = await refreshAccount(acc.email);
+        const snap = await refreshAccount(accKey);
         sendJson(res, 200, {
           ok: Boolean(snap?.success),
           credential: buildCredentialHealth(),
@@ -1497,10 +1782,14 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     syncFromBrowser,
     handleHttpRequest,
     getActiveAccount,
+    getActiveSite,
+    findAccount,
     buildCredentialHealth,
     setRefreshIntervalApplier,
     /** 启动时预热所有账号凭据（失败的账号保持原样，不影响其他账号） */
-    warmUpCredentials: () => credentialManager.warmUp(store.accounts.map(a => a.email)),
+    warmUpCredentials: () => credentialManager.warmUp(
+      store.accounts.map(a => accountKey(a.site, a.email))
+    ),
     /** 卸载时补写未落盘的变更（节流写入器的收尾） */
     dispose: () => storeWriter.dispose(),
     sessionTracker,
@@ -1578,15 +1867,32 @@ function registerBalanceTool(ctx: any, tool: any, logger: any): string {
   // 1) 本版本：tools 服务，register({ name, description, parameters, output, execute })
   const tools = resolveService(ctx, 'tools');
   if (tools && typeof tools.register === 'function') {
+    // DSH 的 tools.register 只接受 JSON Schema 的受支持子集：
+    //   type 必须是 object/array/string/number/integer/boolean/null 之一，
+    //   没有 `type: 'json'` 这种写法（PTC 的 SDK 也要靠这份 schema 生成绑定签名）。
+    // 早期版本写了 { type: 'array', items: { type: 'json' } }，register 会抛
+    // JsonSchemaError（UNSUPPORTED_SCHEMA），工具因此根本没注册上；
+    // 若宿主把异常上抛还会连带影响同一步的 PTC 工具集投影。
     const definition = {
       name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters?.properties ? tool.parameters.properties : tool.parameters,
-      output: {
-        schema: { type: 'array', items: { type: 'json' } },
-        render: (_args: any, value: any) => value
+      get description() {
+        // 站点随激活账号变化：每次投影 schema 时重新读，避免描述写着旧站点
+        return typeof tool.liveDescription === 'function' ? tool.liveDescription() : tool.description;
       },
-      execute: async (args: any) => [{ type: 'text', text: await tool.execute(args) }]
+      // 这里必须传「完整 JSON Schema」（object 根 + properties），
+      // 不能只传 properties 映射：PTC 生成 TS 绑定时按根节点判断类型，
+      // 传映射会让参数类型退化成 unknown，模型无法正确传参。
+      parameters: tool.parameters,
+      output: {
+        schema: {
+          type: 'object',
+          properties: { text: { type: 'string' } },
+          required: ['text']
+        },
+        render: (_args: any, value: any) => [{ type: 'text', text: String(value?.text ?? '') }]
+      },
+      // execute 必须返回 output.schema 声明的「规范 JSON 值」，不是 ContentBlock 数组
+      execute: async (args: any) => ({ text: await tool.execute(args) })
     };
     try {
       const disposer = tools.register(definition);
@@ -1674,7 +1980,12 @@ export function apply(ctx: any, config: Partial<PluginConfig> = {}) {
   try {
     toolReg = registerBalanceTool(
       ctx,
-      createYuyuBalanceTool(service.client, service.store.alertThreshold),
+      createYuyuBalanceTool(
+        service.client,
+        service.store.alertThreshold,
+        service.getActiveSite(),
+        () => service.getActiveSite()
+      ),
       logger
     );
   } catch (err: any) {

@@ -1,4 +1,5 @@
 import { YuyuApiClient } from './api.js';
+import { DEFAULT_SITE, parseAccountKey, sameEmail, siteBaseUrl, siteInfo, YuyuSiteId } from './sites.js';
 
 /**
  * 鱼鱼API 的凭据续期。
@@ -36,7 +37,7 @@ export interface RefreshAttemptResult {
   message?: string;
 }
 
-const DEFAULT_BASE_URL = 'https://sub.anzhiyu.com';
+const DEFAULT_BASE_URL = siteBaseUrl(DEFAULT_SITE);
 
 /** 把 JWT 的 exp 解析成毫秒时间戳 */
 export function jwtExpiry(token: string): number | undefined {
@@ -149,6 +150,8 @@ export async function refreshWithToken(
 /** 管理器内部读写凭据时用的形状（与 types.ts 的 AccountCredentials 结构一致） */
 export interface StoredCredentials {
   email: string;
+  /** 凭据所属站点：refresh token 只在自己站点有效 */
+  site?: YuyuSiteId;
   accessToken: string;
   refreshToken?: string;
   accessTokenExpiresAt?: number;
@@ -156,10 +159,14 @@ export interface StoredCredentials {
 }
 
 export interface CredentialManagerHooks {
-  /** 读取账号当前凭据 */
-  get: (email: string) => StoredCredentials | undefined;
+  /** 读取账号当前凭据（key = `<site>:<email>` 或历史裸邮箱） */
+  get: (key: string) => StoredCredentials | undefined;
   /** 写回续期后的凭据（必须持久化） */
   set: (credentials: StoredCredentials) => void;
+  /** 取该账号的使用记录页地址（用于提示用户去哪个站重新登录） */
+  loginUrlFor?: (key: string) => string;
+  /** 该账号所属站点的 API 根地址（缺省用管理器默认值） */
+  baseUrlFor?: (key: string) => string;
   /** 续期彻底失败时的兜底：重新去浏览器捞一份 */
   recoverFromBrowser?: () => Promise<StoredCredentials | null>;
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
@@ -251,10 +258,15 @@ export function createCredentialManager(hooks: CredentialManagerHooks, baseUrl =
         return await recover(email);
       }
 
-      const result = await refreshWithToken(rt, baseUrl);
+      // refresh token 只对签发它的站点有效：sub 的 rt 拿去 www 刷新必定 400
+      const siteBase = hooks.baseUrlFor?.(email) || baseUrl;
+      const result = await refreshWithToken(rt, siteBase);
       if (result.ok && result.credentials) {
         const next: StoredCredentials = {
-          email,
+          // hooks.get/set 的 key 是 `<site>:<email>`，但凭据对象里的 email
+          // 必须是裸邮箱；写回 store 时按 site + email 匹配，写错就会静默丢 rt。
+          email: current?.email || parseAccountKey(email).email,
+          site: current?.site,
           accessToken: result.credentials.accessToken,
           refreshToken: result.credentials.refreshToken,
           accessTokenExpiresAt: result.credentials.accessTokenExpiresAt,
@@ -291,8 +303,12 @@ export function createCredentialManager(hooks: CredentialManagerHooks, baseUrl =
     try {
       const found = await hooks.recoverFromBrowser();
       if (!found || !found.accessToken) return null;
-      // 只接受同一账号的凭据，避免把 A 账号的 token 写到 B 上
-      if (found.email && email && found.email !== email) {
+      // 只接受同一账号的凭据，避免把 A 账号的 token 写到 B 上。
+      // email 参数可能是 `<site>:<email>` 账号键，比较前拆开、邮箱统一小写。
+      const parsedKey = parseAccountKey(email);
+      const sameAccount = sameEmail(found.email, parsedKey.email)
+        && (!String(email || '').includes(':') || (found.site || DEFAULT_SITE) === parsedKey.site);
+      if (found.email && email && !sameAccount) {
         log('warn', `[鱼鱼API] 浏览器里最新登录的是 ${found.email}，与 ${email} 不一致，未覆盖`);
         return null;
       }
@@ -320,7 +336,8 @@ export function createCredentialManager(hooks: CredentialManagerHooks, baseUrl =
       token = current?.accessToken || '';
     }
     if (!token) {
-      throw new Error('没有可用的登录凭据，请在浏览器登录 sub.anzhiyu.com 后点击「从浏览器同步」');
+      const loginUrl = hooks.loginUrlFor?.(email) || siteInfo(DEFAULT_SITE).usageUrl;
+      throw new Error(`没有可用的登录凭据，请在浏览器登录 ${loginUrl} 后点击「从浏览器同步」`);
     }
 
     const shouldRefreshAndRetry = (value: any) => isUnauthorizedLike(value);

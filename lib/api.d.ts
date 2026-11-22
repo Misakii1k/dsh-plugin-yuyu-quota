@@ -1,4 +1,5 @@
 import { UserProfile, UsageStats, ApiKeyItem, BalanceSnapshot } from './types.js';
+import { YuyuSiteId } from './sites.js';
 /**
  * 带 HTTP 状态码的 API 错误。
  *
@@ -21,9 +22,12 @@ export declare class YuyuApiError extends Error {
 export declare class YuyuApiClient {
     private baseUrl;
     private token;
-    constructor(token: string, baseUrl?: string);
+    /** 账号所属站点（仅用于展示；请求地址仍以 baseUrl 为准） */
+    private site;
+    constructor(token: string, baseUrl?: string, site?: YuyuSiteId);
     updateToken(token: string): void;
     updateBaseUrl(baseUrl: string): void;
+    updateSite(site: YuyuSiteId): void;
     private request;
     /**
      * 获取用户资料与账户钱包余额

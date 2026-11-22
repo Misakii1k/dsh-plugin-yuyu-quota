@@ -308,5 +308,75 @@ console.log('[ui-test] 11) 检测到新版本时在设置右上角与检查更�
   }
 }
 
+console.log('[ui-test] 12) 余额显示 / 隐藏');
+{
+  const { container, window } = await boot();
+  if (container) {
+    const bal = container.querySelector('#yuyu-card-bal');
+    const cur = container.querySelector('#yuyu-card-cur');
+    const eye = container.querySelector('#yuyu-balance-eye');
+    const sw = container.querySelector('#yuyu-hide-balance-switch');
+    const promptSw = container.querySelector('#yuyu-notify-prompt-switch');
+    const apiBtn = container.querySelector('#yuyu-api-switch');
+    const win = container.ownerDocument.defaultView;
+
+    check('眼睛按钮存在', Boolean(eye));
+    check('设置里的显示余额开关存在', Boolean(sw));
+    check('等待选择通知开关存在', Boolean(promptSw));
+    check('对话 API 切换按钮存在', Boolean(apiBtn));
+
+    win.__yuyuApplyPreferences({
+      theme: 'light',
+      widgetStyle: 'whale',
+      notifyMode: 'both',
+      notifyOnComplete: true,
+      notifySubagentMute: true,
+      notifyOnUserPrompt: true,
+      hideBalance: true
+    });
+    check('隐藏后余额显示为掩码', bal.textContent === '••••', bal.textContent);
+    check('隐藏后不显示 $ 前缀', cur.style.display === 'none', cur.style.display);
+    check('隐藏后眼睛按钮提示「显示余额」', eye.getAttribute('aria-label') === '显示余额');
+    check('隐藏后设置开关为关闭', sw.getAttribute('aria-checked') === 'false');
+
+    eye.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    check('点眼睛后恢复金额', /\d/.test(bal.textContent) && bal.textContent !== '••••', bal.textContent);
+    check('恢复后 $ 前缀回来', cur.style.display !== 'none');
+    check('恢复后眼睛按钮提示「隐藏余额」', eye.getAttribute('aria-label') === '隐藏余额');
+
+    sw.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    check('点设置开关再次隐藏', bal.textContent === '••••', bal.textContent);
+    check('设置开关状态同步为关闭', sw.getAttribute('aria-checked') === 'false');
+
+    win.__yuyuApplyPreferences({
+      theme: 'light',
+      widgetStyle: 'whale',
+      notifyMode: 'both',
+      notifyOnComplete: true,
+      notifySubagentMute: true,
+      notifyOnUserPrompt: false,
+      hideBalance: false
+    });
+    check('关闭等待选择通知后开关熄灭', promptSw.getAttribute('aria-checked') === 'false');
+    check('恢复余额显示后金额回来', /\d/.test(bal.textContent) && bal.textContent !== '••••', bal.textContent);
+  }
+}
+
+console.log('[ui-test] 13) 点 API 按钮不误关卡片，并给出可读提示');
+{
+  const { container, window } = await boot();
+  if (container) {
+    const win = container.ownerDocument.defaultView;
+    const card = container.querySelector('#yuyu-card-popup');
+    container.querySelector('#yuyu-whale-menu-btn')
+      .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    const apiBtn = container.querySelector('#yuyu-api-switch');
+    apiBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    check('点 API 后卡片仍打开', card.classList.contains('is-open'));
+    const tip = container.querySelector('#yuyu-sync-tip');
+    check('没有 session 时提示先打开对话', tip && tip.textContent.indexOf('先打开') !== -1, tip && tip.textContent);
+  }
+}
+
 console.log(`\n[ui-test] 结果: ${passed} 通过 / ${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

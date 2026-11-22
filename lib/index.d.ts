@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { YuyuApiClient } from './api.js';
 import { PluginConfig, BalanceSnapshot, RefreshInterval, PluginPreferences, TurnUsageReport, UpdateInfo, WidgetPosition, CredentialHealth } from './types.js';
+import { YuyuSiteId } from './sites.js';
 export declare const name = "dsh-plugin-yuyu-quota";
 /**
  * Cordis 的服务必须先在 inject 中声明，才能以属性形式访问（ctx.webServer /
@@ -17,6 +18,8 @@ export declare const BRIDGE_PORT = 53788;
 export declare const API_PREFIX = "/yuyu-quota/api";
 export interface SavedAccount {
     email: string;
+    /** 账号所属站点：sub 与 www 是两套独立后端，同一邮箱可以是两个账号 */
+    site: YuyuSiteId;
     token: string;
     balance: number;
     lastSyncedAt: string;
@@ -35,6 +38,7 @@ export interface SavedAccount {
     refreshedAt?: number;
 }
 export interface MultiAccountStore {
+    /** 当前激活账号的唯一键：`<site>:<email>`（历史文件里的裸邮箱按默认站点解析） */
     activeEmail: string;
     lastBrowserIat: number;
     refreshInterval: RefreshInterval;
@@ -56,6 +60,15 @@ export declare function resolveSoundFilePath(soundKey?: string): string | undefi
  */
 export declare function sanitizePreferences(input: any, base: PluginPreferences): PluginPreferences;
 export declare function loadAccountStore(): MultiAccountStore;
+/**
+ * 账号库去重：同一 `<site>:<email>` 只保留一条。
+ *
+ * 1.3.0 的自愈迁移在「目标站点已有同邮箱账号」时会留下重复键；
+ * 这些重复项会让切号/删除命中错误的那一条，也会让 activeEmail 与快照错位。
+ * 选择规则：优先 refreshedAt 更新的凭据，其次 lastSyncedAt 更新的数据；
+ * 被合并掉的记录如果带有 refreshToken，而保留项没有，则补过去（同账号同站点）。
+ */
+export declare function dedupeAccounts(accounts: SavedAccount[]): SavedAccount[];
 export declare function saveAccountStore(store: MultiAccountStore): void;
 /**
  * 收敛前端上报的浮窗位置。
@@ -92,8 +105,17 @@ export declare function createYuyuService(initialConfig?: Partial<PluginConfig>,
     }) => Promise<BalanceSnapshot | null>;
     syncFromBrowser: (forceCapture?: boolean, manualToken?: string, forceSwitch?: boolean) => Promise<{
         success: boolean;
+        browser: string;
+        site: YuyuSiteId;
+        email: string;
+        balance: number;
+        snapshot: BalanceSnapshot;
+        message: string;
+    } | {
+        success: boolean;
         message: string;
         browser?: undefined;
+        site?: undefined;
         email?: undefined;
         balance?: undefined;
         snapshot?: undefined;
@@ -104,6 +126,7 @@ export declare function createYuyuService(initialConfig?: Partial<PluginConfig>,
         balance: number;
         snapshot: BalanceSnapshot;
         message: string;
+        site?: undefined;
     } | {
         success: boolean;
         browser: string;
@@ -111,9 +134,12 @@ export declare function createYuyuService(initialConfig?: Partial<PluginConfig>,
         balance: number | undefined;
         snapshot: BalanceSnapshot | null;
         message: string;
+        site?: undefined;
     }>;
     handleHttpRequest: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<void>;
     getActiveAccount: () => SavedAccount | undefined;
+    getActiveSite: () => YuyuSiteId;
+    findAccount: (target?: string) => SavedAccount | undefined;
     buildCredentialHealth: () => CredentialHealth | null;
     setRefreshIntervalApplier: (fn: () => void) => void;
     /** 启动时预热所有账号凭据（失败的账号保持原样，不影响其他账号） */

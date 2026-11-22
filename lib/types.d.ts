@@ -1,6 +1,8 @@
 /**
  * 鱼鱼 API 数据类型定义 + 本插件的运行期配置 / 汇报类型
  */
+import type { YuyuSiteId } from './sites.js';
+export type { YuyuSiteId };
 export interface UserProfile {
     id: number;
     email: string;
@@ -56,6 +58,8 @@ export interface BalanceSnapshot {
     fetchedAt?: number;
     /** 服务端 balance.updated_at（每次请求都会被刷新，仅作参考） */
     serverUpdatedAt?: string;
+    /** 该快照来自哪个站点（sub / www）；旧数据可能缺省 */
+    site?: YuyuSiteId;
     email: string;
     balance: number;
     frozenBalance: number;
@@ -78,6 +82,7 @@ export interface BalanceSnapshot {
     errorStatus?: number;
 }
 export type RefreshInterval = '1s' | '5s' | '30s' | '1m' | '5m';
+/** 已支持的鱼鱼API 站点（两套独立后端，token 不通用）；见 sites.ts */
 /**
  * 账号凭据。
  *
@@ -88,6 +93,8 @@ export interface AccountCredentials {
     email: string;
     accessToken: string;
     refreshToken?: string;
+    /** 凭据所属站点（sub / www） */
+    site?: YuyuSiteId;
     /** access token 过期时刻（ms） */
     accessTokenExpiresAt?: number;
     /** refresh token 过期时刻（ms），未知则缺省 */
@@ -97,6 +104,7 @@ export interface AccountCredentials {
 }
 /** 凭据健康状态，用于前端展示「还能撑多久」 */
 export interface CredentialHealth {
+    site?: YuyuSiteId;
     email: string;
     hasRefreshToken: boolean;
     accessTokenExpiresAt?: number;
@@ -185,12 +193,16 @@ export interface PluginPreferences {
     notifySound: string;
     /** 子智能体完成时不提示 */
     notifySubagentMute: boolean;
+    /** 等待用户选择（权限审批 / 问答选项 / 计划确认）时提示 */
+    notifyOnUserPrompt: boolean;
     /** 失败/中止的轮次也提示 */
     notifyOnFailure: boolean;
     /** 仅当 DSH 窗口不在前台时才提示 */
     notifyOnlyWhenUnfocused: boolean;
     /** 每轮完成后在浮窗里汇报 Token / 额度 */
     reportOnComplete: boolean;
+    /** 隐藏界面与通知里的余额数字（隐私模式），成本/用量仍正常显示 */
+    hideBalance: boolean;
     /** 自动检查插件更新 */
     updateCheck: boolean;
     /** Cloudflare 边缘更新源根地址，如 https://xxx.pages.dev */
@@ -225,7 +237,10 @@ export interface PluginConfig {
     refreshInterval: RefreshInterval;
     /** 低额警示阈值（单位：$，默认 2.00） */
     alertThreshold: number;
-    /** API 基础服务地址，默认 https://sub.anzhiyu.com */
+    /**
+     * API 基础服务地址。默认 https://sub.anzhiyu.com；
+     * 已内置 sub / www 两个站点（见 sites.ts），账号各自记住自己的站点。
+     */
     baseUrl?: string;
     /** 会话任务完成后是否弹 Windows 原生通知 */
     notifyOnComplete?: boolean;
@@ -233,12 +248,16 @@ export interface PluginConfig {
     notifySound?: string;
     /** 子智能体完成时不提示 */
     notifySubagentMute?: boolean;
+    /** 等待用户选择时提示 */
+    notifyOnUserPrompt?: boolean;
     /** 失败/中止的轮次也提示 */
     notifyOnFailure?: boolean;
     /** 仅当 DSH 未在前台时提示 */
     notifyOnlyWhenUnfocused?: boolean;
     /** 每轮完成后在浮窗里汇报 */
     reportOnComplete?: boolean;
+    /** 隐藏余额数字（隐私模式） */
+    hideBalance?: boolean;
     /** 是否自动检查插件更新 */
     updateCheck?: boolean;
     /** Cloudflare 边缘更新源根地址 */

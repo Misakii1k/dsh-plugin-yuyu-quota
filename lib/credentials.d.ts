@@ -1,4 +1,5 @@
 import { YuyuApiClient } from './api.js';
+import { YuyuSiteId } from './sites.js';
 /**
  * 鱼鱼API 的凭据续期。
  *
@@ -46,16 +47,22 @@ export declare function refreshWithToken(refreshToken: string, baseUrl?: string,
 /** 管理器内部读写凭据时用的形状（与 types.ts 的 AccountCredentials 结构一致） */
 export interface StoredCredentials {
     email: string;
+    /** 凭据所属站点：refresh token 只在自己站点有效 */
+    site?: YuyuSiteId;
     accessToken: string;
     refreshToken?: string;
     accessTokenExpiresAt?: number;
     refreshTokenExpiresAt?: number;
 }
 export interface CredentialManagerHooks {
-    /** 读取账号当前凭据 */
-    get: (email: string) => StoredCredentials | undefined;
+    /** 读取账号当前凭据（key = `<site>:<email>` 或历史裸邮箱） */
+    get: (key: string) => StoredCredentials | undefined;
     /** 写回续期后的凭据（必须持久化） */
     set: (credentials: StoredCredentials) => void;
+    /** 取该账号的使用记录页地址（用于提示用户去哪个站重新登录） */
+    loginUrlFor?: (key: string) => string;
+    /** 该账号所属站点的 API 根地址（缺省用管理器默认值） */
+    baseUrlFor?: (key: string) => string;
     /** 续期彻底失败时的兜底：重新去浏览器捞一份 */
     recoverFromBrowser?: () => Promise<StoredCredentials | null>;
     logger?: {

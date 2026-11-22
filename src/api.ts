@@ -1,6 +1,7 @@
 import { UserProfile, UsageStats, ApiKeyItem, BalanceSnapshot } from './types.js';
+import { DEFAULT_SITE, siteBaseUrl, siteInfo, normalizeSiteId, YuyuSiteId } from './sites.js';
 
-const DEFAULT_BASE_URL = 'https://sub.anzhiyu.com';
+const DEFAULT_BASE_URL = siteBaseUrl(DEFAULT_SITE);
 
 /**
  * 带 HTTP 状态码的 API 错误。
@@ -38,10 +39,13 @@ export class YuyuApiError extends Error {
 export class YuyuApiClient {
   private baseUrl: string;
   private token: string;
+  /** 账号所属站点（仅用于展示；请求地址仍以 baseUrl 为准） */
+  private site: YuyuSiteId;
 
-  constructor(token: string, baseUrl: string = DEFAULT_BASE_URL) {
+  constructor(token: string, baseUrl: string = DEFAULT_BASE_URL, site?: YuyuSiteId) {
     this.token = token.trim();
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.site = normalizeSiteId(site) || DEFAULT_SITE;
   }
 
   public updateToken(token: string) {
@@ -50,6 +54,10 @@ export class YuyuApiClient {
 
   public updateBaseUrl(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+  }
+
+  public updateSite(site: YuyuSiteId) {
+    this.site = normalizeSiteId(site) || DEFAULT_SITE;
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -161,8 +169,10 @@ export class YuyuApiClient {
       const statusTag = isLowBalance ? '[预警]' : '[正常]';
       const balanceWarning = isLowBalance ? ` (提示: 已低于设定的 $${alertThreshold.toFixed(2)} 预警阈值)` : '';
 
+      const site = siteInfo(this.site);
       const lines = [
         `${statusTag} 鱼鱼API 账户状态`,
+        `- 站点: ${site.name}`,
         `- 账号邮箱: ${p.email}`,
         `- 当前可用余额: $${balance.toFixed(2)}${balanceWarning}`,
         `- 冻结金额: $${Number(p.frozen_balance || 0).toFixed(2)}`,
@@ -181,6 +191,7 @@ export class YuyuApiClient {
         timestamp: fetchedAt,
         fetchedAt,
         serverUpdatedAt,
+        site: this.site,
         email: p.email,
         balance,
         frozenBalance: Number(p.frozen_balance || 0),

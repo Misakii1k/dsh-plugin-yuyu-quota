@@ -241,7 +241,7 @@
             <span class="step-tag">免输入 Token</span>
           </div>
           <div class="step-desc">
-            在 Chrome 或 Edge 浏览器中登录鱼鱼 API 控制台（sub.anzhiyu.com/usage）。插件会自动只读扫描本地存储提取有效凭据，无需繁琐复制黏贴。
+            在 Chrome 或 Edge 浏览器中登录鱼鱼 API 控制台（旧站 <code>sub.anzhiyu.com/usage</code> 或新站 <code>www.anzhiyu.com/usage</code>，两站账号与 token 互不通用）。插件会自动只读扫描本地存储，按站点分别提取有效凭据，无需繁琐复制黏贴。
           </div>
         </div>
       </div>
@@ -255,7 +255,7 @@
             <span class="step-tag">多账号共存</span>
           </div>
           <div class="step-desc">
-            拥有多个账号时，卡片右上角横向罗列前缀标签。轻点对应标签即可无感秒切，可用余额、今日实扣与名下密钥一并即时同步展示。
+            拥有多个账号时，卡片右上角横向罗列前缀标签，并用「旧 / 新」徽标区分两个独立站点。轻点对应标签即可无感秒切，可用余额、今日实扣与名下密钥一并即时同步展示。
           </div>
         </div>
       </div>
@@ -270,6 +270,34 @@
           </div>
           <div class="step-desc">
             点击顶栏齿轮设置按钮，可按需切换 1秒 / 5秒 / 30秒 / 1分 / 5分。具备智能防封保护：卡片展开时按设定高速刷新，收起时自动降频静默。
+          </div>
+        </div>
+      </div>
+
+      <!-- 步骤 4 -->
+      <div class="step-item">
+        <div class="step-num">04</div>
+        <div class="step-content">
+          <div class="step-title-row">
+            <span class="step-title">隐私与提醒</span>
+            <span class="step-tag">余额可隐藏</span>
+          </div>
+          <div class="step-desc">
+            卡片余额旁的眼睛按钮可一键隐藏金额，设置面板也有「显示余额」开关，偏好会持久保存。出现权限审批、问答选项或计划确认时，插件会像任务完成一样弹系统通知，避免离开电脑后 Agent 一直卡在等待选择。
+          </div>
+        </div>
+      </div>
+
+      <!-- 步骤 5 -->
+      <div class="step-item">
+        <div class="step-num">05</div>
+        <div class="step-content">
+          <div class="step-title-row">
+            <span class="step-title">对话 API 一键对齐</span>
+            <span class="step-tag">复用 DSH 模型选择</span>
+          </div>
+          <div class="step-desc">
+            卡片底部「API」按钮会把当前对话切到当前账号站点的供应商：旧站对应 <code>fish</code>，新站对应 <code>yuyu</code>。插件直接读取 DSH 已配置好的模型目录，当前对话立即生效并保存为后续默认；不写 Key，也不需要额外维护供应商配置。
           </div>
         </div>
       </div>
@@ -293,8 +321,11 @@
     <!-- 底部操作按钮 -->
     <div class="footer-actions">
       <button class="btn btn-secondary" onclick="window.close()">关闭此教程</button>
+      <a class="btn btn-secondary" href="https://www.anzhiyu.com/usage" target="_blank" rel="noreferrer">
+        <span>前往新站控制台</span>
+      </a>
       <a class="btn btn-primary" href="https://sub.anzhiyu.com/usage" target="_blank" rel="noreferrer">
-        <span>前往鱼鱼控制台</span>
+        <span>前往旧站控制台</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
           <polyline points="15 3 21 3 21 9"/>

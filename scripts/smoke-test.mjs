@@ -14,7 +14,8 @@
 import assert from 'node:assert/strict';
 import { createSessionTracker } from '../lib/session-tracker.js';
 import { compareVersions, cleanVersion, normalizeFeedUrl, resolveDownloadUrl } from '../lib/update.js';
-import { sanitizePreferences, defaultPreferences, normalizeWidgetPosition, resolveSoundFilePath } from '../lib/index.js';
+import { sanitizePreferences, defaultPreferences, normalizeWidgetPosition, resolveSoundFilePath, dedupeAccounts } from '../lib/index.js';
+import { normalizeSiteId, parseAccountKey, siteBaseUrl, siteOfBaseUrl, accountKey, sameEmail } from '../lib/sites.js';
 
 let passed = 0;
 let failed = 0;
@@ -312,6 +313,19 @@ test('注入型 updateFeedUrl 被拒绝', () => {
   assert.equal(next.updateFeedUrl, base.updateFeedUrl);
 });
 
+test('等待选择通知与余额隐私开关进入白名单', () => {
+  const base = defaultPreferences();
+  assert.equal(base.notifyOnUserPrompt, true);
+  assert.equal(base.hideBalance, false);
+  const next = sanitizePreferences({ notifyOnUserPrompt: false, hideBalance: true }, base);
+  assert.equal(next.notifyOnUserPrompt, false);
+  assert.equal(next.hideBalance, true);
+  // 非布尔值必须被忽略，避免字符串 "false" 把开关意外打开/关掉
+  const dirty = sanitizePreferences({ notifyOnUserPrompt: 'false', hideBalance: 1 }, base);
+  assert.equal(dirty.notifyOnUserPrompt, true);
+  assert.equal(dirty.hideBalance, false);
+});
+
 console.log('\n[6] 浮窗位置');
 test('合法坐标保留并取整', () => {
   const pos = normalizeWidgetPosition({ x: 12.7, y: 99.2, edge: 'left' });
@@ -346,6 +360,129 @@ test('立绘统一收敛为经典款 DSniang1', () => {
   assert.equal(sanitizePreferences({ whaleModel: 'DSniang02' }, base).whaleModel, 'DSniang1');
   assert.equal(sanitizePreferences({ whaleModel: 'DSH2' }, base).whaleModel, 'DSniang1');
   assert.equal(sanitizePreferences({ whaleModel: 'DSniang1' }, base).whaleModel, 'DSniang1');
+});
+
+console.log('\n[8] 等待选择通知');
+await testAsync('权限审批弹窗触发 onUserPrompt', async () => {
+  const notices = [];
+  const tracker = createSessionTracker({
+    getCachedSnapshot: () => null,
+    refreshSnapshot: async () => snapshot(),
+    onReport: () => {},
+    onUserPrompt: (notice) => { notices.push(notice); }
+  });
+  tracker.observe(mainSession, { type: 'session/title', time: Date.now(), data: { title: '测试会话' } });
+  tracker.observe(mainSession, {
+    type: 'approval/asked',
+    time: Date.now(),
+    data: { id: 'ap-1', toolName: 'bash', reason: '需要写入文件' }
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].kind, 'approval');
+  assert.equal(notices[0].toolName, 'bash');
+  assert.equal(notices[0].reason, '需要写入文件');
+  assert.equal(notices[0].sessionTitle, '测试会话');
+});
+
+await testAsync('问答选项与计划确认触发 onUserPrompt，普通工具不触发', async () => {
+  const notices = [];
+  const tracker = createSessionTracker({
+    getCachedSnapshot: () => null,
+    refreshSnapshot: async () => snapshot(),
+    onReport: () => {},
+    onUserPrompt: (notice) => { notices.push(notice); }
+  });
+  tracker.observe(mainSession, {
+    type: 'tool/call',
+    time: Date.now(),
+    data: { callId: 'call-1', name: 'ask_user_question', arguments: {} }
+  });
+  tracker.observe(mainSession, {
+    type: 'tool/call',
+    time: Date.now(),
+    data: { callId: 'call-2', name: 'exit_plan_mode', arguments: {} }
+  });
+  tracker.observe(mainSession, {
+    type: 'tool/call',
+    time: Date.now(),
+    data: { callId: 'call-3', name: 'read_file', arguments: {} }
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(notices.length, 2);
+  assert.equal(notices[0].kind, 'question');
+  assert.equal(notices[0].toolName, 'ask_user_question');
+  assert.equal(notices[1].toolName, 'exit_plan_mode');
+});
+
+await testAsync('onUserPrompt 抛错不冒泡进事件流', async () => {
+  const tracker = createSessionTracker({
+    getCachedSnapshot: () => null,
+    refreshSnapshot: async () => snapshot(),
+    onReport: () => {},
+    onUserPrompt: () => { throw new Error('notify boom'); }
+  });
+  // 不应抛到调用方
+  tracker.observe(mainSession, {
+    type: 'approval/asked',
+    time: Date.now(),
+    data: { id: 'ap-2', toolName: 'bash' }
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(true);
+});
+
+console.log('\n[9] 双站点解析');
+test('host / URL / 别名都能正确落到站点', () => {
+  assert.equal(normalizeSiteId('sub'), 'sub');
+  assert.equal(normalizeSiteId('www'), 'www');
+  assert.equal(normalizeSiteId('sub.anzhiyu.com'), 'sub');
+  assert.equal(normalizeSiteId('https://sub.anzhiyu.com/usage'), 'sub');
+  // 关键回归：不能把 www. 抹掉后误判成 sub
+  assert.equal(normalizeSiteId('www.anzhiyu.com'), 'www');
+  assert.equal(normalizeSiteId('https://www.anzhiyu.com/recharge-center'), 'www');
+  assert.equal(normalizeSiteId('anzhiyu.com'), 'www');
+  assert.equal(normalizeSiteId('旧站'), 'sub');
+  assert.equal(normalizeSiteId('新站'), 'www');
+  assert.equal(normalizeSiteId('example.com'), null);
+  assert.equal(siteOfBaseUrl('https://www.anzhiyu.com'), 'www');
+  assert.equal(siteBaseUrl('www'), 'https://www.anzhiyu.com');
+});
+
+test('账号键按站点隔离且邮箱统一小写', () => {
+  assert.equal(accountKey('sub', 'A@QQ.com'), 'sub:a@qq.com');
+  assert.equal(accountKey('www', 'A@QQ.com'), 'www:a@qq.com');
+  // 同一邮箱在两个站点是两个不同账号键
+  assert.notEqual(accountKey('sub', 'a@qq.com'), accountKey('www', 'a@qq.com'));
+  assert.deepEqual(parseAccountKey('www:a@qq.com'), { site: 'www', email: 'a@qq.com' });
+  assert.deepEqual(parseAccountKey('a@qq.com'), { site: 'sub', email: 'a@qq.com' });
+  assert.equal(sameEmail('A@QQ.com', 'a@qq.com'), true);
+});
+
+console.log('\n[10] 账号库去重');
+test('同站点同邮箱只保留一条，跨站点同邮箱仍算两条', () => {
+  const base = {
+    email: 'a@qq.com',
+    balance: 1,
+    lastSyncedAt: '2026-11-22T01:00:00.000Z'
+  };
+  const accounts = [
+    { ...base, site: 'www', token: 'old-token', refreshToken: 'rt_old', refreshedAt: 1000 },
+    { ...base, site: 'sub', token: 'sub-token', refreshToken: 'rt_sub', refreshedAt: 2000 },
+    { ...base, site: 'www', token: 'new-token', refreshToken: 'rt_new', refreshedAt: 3000, balance: 5, lastSyncedAt: '2026-11-22T02:00:00.000Z' },
+    { ...base, site: 'www', token: 'newer-token', refreshedAt: 2000, balance: 7, lastSyncedAt: '2026-11-22T03:00:00.000Z', snapshot: { balance: 7 } }
+  ];
+  const deduped = dedupeAccounts(accounts);
+  assert.equal(deduped.length, 2, `期望 2 条，实际 ${deduped.length}`);
+  const www = deduped.find(a => a.site === 'www');
+  const sub = deduped.find(a => a.site === 'sub');
+  assert.ok(www && sub);
+  // 凭据取 refreshedAt 最新的一条
+  assert.equal(www.token, 'new-token');
+  assert.equal(www.refreshToken, 'rt_new');
+  // 余额快照取 lastSyncedAt 最新的一条，但 token/rt 不能被它覆盖
+  assert.equal(www.balance, 7);
+  assert.equal(www.lastSyncedAt, '2026-11-22T03:00:00.000Z');
 });
 
 console.log(`\n结果：${passed} 通过 / ${failed} 失败\n`);

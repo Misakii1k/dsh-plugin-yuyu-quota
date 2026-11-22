@@ -1,5 +1,8 @@
+import { YuyuSiteId } from './sites.js';
 export interface DiscoveredToken {
     email: string;
+    /** 该登录态所属站点（由 leveldb 记录前的 `_https://<host>` 前缀判定） */
+    site: YuyuSiteId;
     token: string;
     iat: number;
     exp: number;
@@ -16,6 +19,8 @@ export interface SyncResult {
     browser?: string;
     token?: string;
     email?: string;
+    /** 命中的登录态所属站点 */
+    site?: YuyuSiteId;
     balance?: number;
     iat?: number;
     allDiscovered?: DiscoveredToken[];
@@ -54,15 +59,19 @@ interface TokenHit {
     profileKey: string;
     fileKey: string;
     index: number;
+    site: YuyuSiteId;
 }
 interface RefreshHit {
     rt: string;
     profileKey: string;
     fileKey: string;
     index: number;
+    site: YuyuSiteId;
 }
 export interface RawScanState extends RawScanHit {
     tokenHits: TokenHit[];
+    /** 结构合法但已过期的 token：access token 不能用，但同一文件里的 rt 往往还能救回来 */
+    expiredTokenHits: TokenHit[];
     refreshHits: RefreshHit[];
 }
 /**
@@ -101,7 +110,7 @@ export declare function scanRunningBrowsersForToken(): Promise<SyncResult>;
 /**
  * 使用系统默认浏览器打开鱼鱼API 登录页，并轮询本地 LevelDB 捕获新登录的 Token。
  */
-export declare function launchAndCaptureToken(timeoutMs?: number): Promise<SyncResult>;
+export declare function launchAndCaptureToken(timeoutMs?: number, site?: YuyuSiteId): Promise<SyncResult>;
 /**
  * 用系统默认程序打开 URL。
  *

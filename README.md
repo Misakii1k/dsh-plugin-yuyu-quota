@@ -10,7 +10,7 @@
 
 余额不用再开网页查一次。
 
-**鱼鱼额度**把 [鱼鱼 API](https://sub.anzhiyu.com) 的可用余额、今日消耗和密钥状态搬到 [DeepSeek-Harness](https://github.com/deepseek-ai/deepseek-harness) 的状态栏上。点一下胶囊看详情，问一句「我还有多少钱」让模型自己查。凭据会自己续期，所以不必每隔一两天重新登录一次。
+**鱼鱼额度**把 [鱼鱼 API](https://sub.anzhiyu.com) 旧站与 [新站](https://www.anzhiyu.com) 的可用余额、今日消耗和密钥状态搬到 [DeepSeek-Harness](https://github.com/deepseek-ai/deepseek-harness) 的状态栏上。同一邮箱可以在两个站各算一个账号；点一下胶囊看详情，问一句「我还有多少钱」让模型自己查。凭据会自己续期，所以不必每隔一两天重新登录一次。
 
 ---
 
@@ -20,8 +20,9 @@
 | :--- | :--- |
 | 开浏览器、登录、翻到用量页 | 余额常驻状态栏，一眼可见 |
 | JWT 约 24 小时过期，重登很烦 | 到期前 5 分钟自动续期，401 兜底再试一次 |
-| 多个账号来回切换查 | 多账号并存，卡片里直接切 |
+| 多个账号来回切换查 | 多账号并存，卡片里直接切；旧站 / 新站用「旧 / 新」徽标区分 |
 | 忘了余额，一轮对话烧完才发现 | 低于阈值亮矢量警示图标；每轮结束弹通知报用量 |
+| 换站还要去 DSH 模型菜单手动挑供应商 | 卡片底部「API」按钮，按当前账号站点一键对齐当前对话 |
 
 ---
 
@@ -36,6 +37,7 @@
 
 - **挂件**：小鲸鱼立绘或极简胶囊，可拖到任意位置，松手自动吸附最近边缘，位置跨刷新记住。
 - **详情卡**：账号邮箱、今日消耗、今日 Token、已绑定密钥、上次同步时间，底部带凭据状态条与「立即续期」。
+- **API 对齐**：详情卡底部「API」按钮，直接读取 DSH 自带模型目录，把当前对话切到当前账号站点对应的供应商；旧站 `fish`、新站 `yuyu`，不写 Key，也不需要第二套配置。
 - **对话工具**：注册 `get_yuyu_api_balance`，在对话里问「我还有多少余额」，模型自主调用并用中文汇报。
 
 ---
@@ -49,7 +51,7 @@
 ### 方式二：手动加载
 
 ```bash
-dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.2.4.tgz"
+dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.3.3.tgz"
 ```
 
 ### 首次同步凭据
@@ -70,11 +72,15 @@ dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.2.4.tgz"
 | `token` | string（密文） | *自动加载* | 鱼鱼 API 网页登录 Auth Token，一键配置后自动注入 |
 | `refreshInterval` | enum | `30s` | 刷新频率：`1s` / `5s` / `30s` / `1m` / `5m` |
 | `alertThreshold` | number | `2.0` | 低额预警金额（USD），低于此值显示矢量警示图标 |
-| `baseUrl` | string | `https://sub.anzhiyu.com` | API 根地址，支持国内直连 |
+| `baseUrl` | string | `https://sub.anzhiyu.com` | 默认旧站根地址；内置 `sub` / `www` 两站点，账号各自记住站点（自定义地址仅作兜底） |
 | `notifyMode` | enum | `both` | `both` 系统 + 应用内 / `windows` / `inapp` / `off` |
+| `notifyOnComplete` | boolean | `true` | 每轮结束弹任务完成通知（受 `notifyMode` 控制） |
+| `notifyOnUserPrompt` | boolean | `true` | 权限审批 / 问答选项 / 计划确认弹窗时提醒（受 `notifyMode` 控制） |
+| `notifyOnFailure` | boolean | `true` | 失败 / 中断的轮次也提醒 |
 | `notifySound` | string | `Notification.Reminder` | 通知音效名，或 `none` |
 | `notifySubagentMute` | boolean | `true` | 子智能体完成时不打扰（用量照常记账） |
 | `reportOnComplete` | boolean | `true` | 每轮结束在浮窗汇报本轮 Token 与实扣额度 |
+| `hideBalance` | boolean | `false` | 隐藏余额（卡片眼睛按钮 / 设置开关同步，成本与用量不受影响） |
 | `theme` | enum | `system` | `system` / `light` / `dark` |
 | `widgetStyle` | enum | `whale` | `whale` 小鲸鱼立绘 / `pill` 极简胶囊 |
 | `whaleModel` | enum | `DSniang1` | 立绘形象：`DSniang1` / `DSniang02` / `DSH2` |
@@ -91,13 +97,13 @@ dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.2.4.tgz"
 
 ```bash
 npm run typecheck           # tsc --noEmit
-npm test                    # build + 全套自检（75 项）
-npm run test:smoke          # 后端逻辑 21 项
-npm run test:credentials    # 凭据续期 12 项（不联网）
-npm run test:browser        # 浏览器扫描 11 项（合成 LevelDB）
-npm run test:ui             # 前端 DOM 行为 21 项（jsdom）
-npm run test:cf             # Cloudflare 函数 10 项
-npm run pack               # 打包 tgz 并打印 sha256
+npm test                    # build + 后端 / 凭据 / 浏览器 / API 切换 / UI / 性能 / Cloudflare 全套自检
+npm run test:smoke          # 后端逻辑
+npm run test:credentials    # 凭据续期（不联网）
+npm run test:browser        # 浏览器扫描（合成 LevelDB）
+npm run test:ui             # 前端 DOM 行为（jsdom）
+npm run test:cf             # Cloudflare 函数
+npm run pack                # 打包 tgz 并打印 sha256
 ```
 
 `test:ui` 把 `src/client.js` 真挂到 DOM 上模拟点击，能抓到「切换形态后卡片点不开」这类纯语法检查发现不了的问题。

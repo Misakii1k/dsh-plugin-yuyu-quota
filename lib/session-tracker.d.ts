@@ -1,8 +1,23 @@
 import { BalanceSnapshot, TurnUsageReport } from './types.js';
+export interface UserPromptNotice {
+    sessionId: string;
+    sessionTitle: string;
+    /** 触发弹窗的工具名（approval/asked 时为被审批的工具） */
+    toolName: string;
+    /** approval = 权限审批；question = 问答选项 / 计划确认 */
+    kind: 'approval' | 'question';
+    /** 上游给出的原因（如权限审批的 reason） */
+    reason?: string;
+    /** 同一请求的去重键 */
+    requestId: string;
+    isSubagent: boolean;
+}
 export interface SessionTrackerHooks {
     getCachedSnapshot: () => BalanceSnapshot | null;
     refreshSnapshot: () => Promise<BalanceSnapshot | null>;
     onReport: (report: TurnUsageReport) => void | Promise<void>;
+    /** 出现「等你选择」的弹窗时回调（权限审批 / ask_user_question / 计划确认） */
+    onUserPrompt?: (notice: UserPromptNotice) => void | Promise<void>;
     logger?: {
         warn?: (message: string) => void;
     };

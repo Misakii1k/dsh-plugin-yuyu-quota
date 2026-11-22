@@ -203,6 +203,57 @@ await test('withRetry 在完全无凭据时给出可操作提示', async () => {
   );
 });
 
+console.log('[credentials-test] 8) 账号键续期落盘');
+await test('www:邮箱 续期后写回裸邮箱 + 原站点 + 新 refresh token', async () => {
+  const oldToken = fakeJwt({ exp: Math.floor((Date.now() - HOUR) / 1000) });
+  const newToken = fakeJwt({ exp: Math.floor((Date.now() + 10 * HOUR) / 1000) });
+  const oldRt = 'rt_' + 'e'.repeat(64);
+  const newRt = 'rt_' + 'f'.repeat(64);
+  const store = new Map([['www:a@b.c', {
+    email: 'a@b.c',
+    site: 'www',
+    accessToken: oldToken,
+    refreshToken: oldRt
+  }]]);
+  const seen = [];
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = async (url) => {
+    requestedUrl = String(url);
+    return {
+      status: 200,
+      ok: true,
+      json: async () => ({
+        access_token: newToken,
+        refresh_token: newRt,
+        expires_in: 36000
+      })
+    };
+  };
+  try {
+    const manager = createCredentialManager({
+      get: (key) => store.get(key),
+      set: (creds) => {
+        seen.push(creds);
+        // 模拟 index.ts 的 hooks.set：按 site + 裸邮箱找到账号并写回
+        const key = `${creds.site}:${creds.email.toLowerCase()}`;
+        store.set(key, { ...store.get(key), ...creds });
+      },
+      baseUrlFor: () => 'https://www.anzhiyu.com'
+    });
+    const token = await manager.ensureFresh('www:a@b.c', true);
+    assert.equal(token, newToken);
+    assert.ok(requestedUrl.includes('https://www.anzhiyu.com/api/v1/auth/refresh'), requestedUrl);
+    assert.equal(seen.length, 1);
+    // 关键回归：写回的 email 必须是裸邮箱，否则 hooks.set 会匹配不到账号、静默丢 rt
+    assert.equal(seen[0].email, 'a@b.c');
+    assert.equal(seen[0].site, 'www');
+    assert.equal(store.get('www:a@b.c').refreshToken, newRt);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 console.log(`\n[credentials-test] 结果: ${passed} 通过 / ${failed} 失败`);
 // 延迟退出：本脚本有 setTimeout 驱动的「并发去重」用例，
 // Node 24 + Windows 上若在 libuv 异步句柄尚未 close 时立即 process.exit，

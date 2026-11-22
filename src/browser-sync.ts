@@ -3,9 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { YuyuApiClient } from './api.js';
+import { DEFAULT_SITE, SITES, siteBaseUrl, siteInfo, siteOfHost, YuyuSiteId } from './sites.js';
 
 export interface DiscoveredToken {
   email: string;
+  /** 该登录态所属站点（由 leveldb 记录前的 `_https://<host>` 前缀判定） */
+  site: YuyuSiteId;
   token: string;
   iat: number;
   exp: number;
@@ -23,6 +26,8 @@ export interface SyncResult {
   browser?: string;
   token?: string;
   email?: string;
+  /** 命中的登录态所属站点 */
+  site?: YuyuSiteId;
   balance?: number;
   iat?: number;
   allDiscovered?: DiscoveredToken[];
@@ -110,8 +115,8 @@ function decodeJwtPayload(token: string): any | null {
   }
 }
 
-/** 判断是否为鱼鱼API 签发的用户 access token（并且未过期） */
-function isTargetJwt(payload: any, nowMs: number): boolean {
+/** 判断是否为鱼鱼API 签发的用户 access token（只看结构，过期与否交给调用方分流） */
+function isTargetJwt(payload: any): boolean {
   return Boolean(
     payload
     && typeof payload.email === 'string'
@@ -119,7 +124,6 @@ function isTargetJwt(payload: any, nowMs: number): boolean {
     && payload.token_version !== undefined
     && typeof payload.iat === 'number'
     && typeof payload.exp === 'number'
-    && payload.exp * 1000 > nowMs
   );
 }
 
@@ -201,6 +205,7 @@ interface TokenHit {
   profileKey: string;
   fileKey: string;
   index: number;
+  site: YuyuSiteId;
 }
 
 interface RefreshHit {
@@ -208,10 +213,52 @@ interface RefreshHit {
   profileKey: string;
   fileKey: string;
   index: number;
+  site: YuyuSiteId;
+}
+
+/**
+ * leveldb 里 localStorage 的键形如 `_https://<host>\0<auth_token>`，
+ * 同一份文件里通常混着多个站点的记录。只按 JWT 出现顺序扫描无法区分站点，
+ * 必须回到「这条记录前面最近的一次 origin 标记」去判归属。
+ */
+const ORIGIN_MARKER_REGEX = /_(?:https?:\/\/)([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)/gi;
+
+interface OriginMarker {
+  index: number;
+  site: YuyuSiteId;
+}
+
+function listOriginMarkers(text: string): OriginMarker[] {
+  const markers: OriginMarker[] = [];
+  for (const match of text.matchAll(ORIGIN_MARKER_REGEX)) {
+    const site = siteOfHost(match[1]);
+    if (!site) continue;
+    markers.push({ index: match.index || 0, site });
+  }
+  return markers;
+}
+
+/** 二分查找该偏移之前最近一次 origin 标记；找不到就按历史默认站点处理 */
+function siteAtOffset(markers: OriginMarker[], offset: number): YuyuSiteId {
+  let lo = 0;
+  let hi = markers.length - 1;
+  let found: YuyuSiteId | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (markers[mid].index <= offset) {
+      found = markers[mid].site;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found || DEFAULT_SITE;
 }
 
 export interface RawScanState extends RawScanHit {
   tokenHits: TokenHit[];
+  /** 结构合法但已过期的 token：access token 不能用，但同一文件里的 rt 往往还能救回来 */
+  expiredTokenHits: TokenHit[];
   refreshHits: RefreshHit[];
 }
 
@@ -235,6 +282,7 @@ export function scanAllBrowserTokens(): RawScanState {
     profiles: 0,
     roots: [],
     tokenHits: [],
+    expiredTokenHits: [],
     refreshHits: []
   };
 
@@ -266,36 +314,50 @@ export function scanAllBrowserTokens(): RawScanState {
           continue;
         }
 
+        const markers = listOriginMarkers(text);
+
         for (const match of text.matchAll(REFRESH_TOKEN_REGEX)) {
           if (!state.refreshTokens.includes(match[0])) state.refreshTokens.push(match[0]);
+          const offset = match.index || 0;
           state.refreshHits.push({
             rt: match[0],
             profileKey,
             fileKey: file,
-            index: match.index || 0
+            index: offset,
+            site: siteAtOffset(markers, offset)
           });
         }
 
         for (const match of text.matchAll(JWT_REGEX)) {
           const token = match[0];
           const payload = decodeJwtPayload(token);
-          if (!isTargetJwt(payload, nowMs)) continue;
+          if (!isTargetJwt(payload)) continue;
+          const offset = match.index || 0;
+          const site = siteAtOffset(markers, offset);
+          const hit: TokenHit = {
+            payload,
+            token,
+            browser: browser.name,
+            profileKey,
+            fileKey: file,
+            index: offset,
+            site
+          };
+          if (payload.exp * 1000 <= nowMs) {
+            // 过期 token 仍要留档：scanExpiredAccountsWithRefreshToken 靠它配同源的 rt
+            state.expiredTokenHits.push(hit);
+            continue;
+          }
           state.tokens.push({
             email: payload.email,
+            site,
             token,
             iat: payload.iat,
             exp: payload.exp,
             browser: browser.name,
             profile: path.relative(browser.userDataDir, profileDir) || 'Default'
           });
-          state.tokenHits.push({
-            payload,
-            token,
-            browser: browser.name,
-            profileKey,
-            fileKey: file,
-            index: match.index || 0
-          });
+          state.tokenHits.push(hit);
         }
       }
     }
@@ -321,15 +383,18 @@ export function scanAllBrowserTokens(): RawScanState {
  */
 function pairRefreshTokens(state: RawScanState): DiscoveredToken[] {
   const sorted = [...state.tokens].sort((a, b) => b.iat - a.iat);
-  const byEmail = new Map<string, DiscoveredToken>();
+  // 唯一键是「站点 + 邮箱」：同一邮箱在 sub / www 是两个独立账号，
+  // 只按 email 去重会互相覆盖，并把 A 站的 refresh token 写到 B 站上。
+  const byAccount = new Map<string, DiscoveredToken>();
   const used = new Set<string>();
 
-  /** 每个 profile 里可用的 rt 队列（按写入位置从新到旧） */
+  /** 每个 profile×站点 里可用的 rt 队列（按写入位置从新到旧） */
   const rtByProfile = new Map<string, RefreshHit[]>();
   for (const hit of state.refreshHits) {
-    const list = rtByProfile.get(hit.profileKey) || [];
+    const key = `${hit.profileKey}|${hit.site}`;
+    const list = rtByProfile.get(key) || [];
     list.push(hit);
-    rtByProfile.set(hit.profileKey, list);
+    rtByProfile.set(key, list);
   }
   for (const list of rtByProfile.values()) {
     // 位置越大越新（leveldb 追加写）；按 profile 内位置降序
@@ -337,12 +402,13 @@ function pairRefreshTokens(state: RawScanState): DiscoveredToken[] {
   }
 
   for (const token of sorted) {
-    if (byEmail.has(token.email)) continue;
+    const key = `${token.site}:${String(token.email || '').toLowerCase()}`;
+    if (byAccount.has(key)) continue;
     const hit = state.tokenHits.find(h => h.token === token.token);
     let chosen: RefreshHit | null = null;
 
     if (hit) {
-      const queue = rtByProfile.get(hit.profileKey) || [];
+      const queue = rtByProfile.get(`${hit.profileKey}|${hit.site}`) || [];
       // 优先取同文件且偏移最接近的；没有就取该 profile 里最新的
       const sameFile = queue.filter(r => r.fileKey === hit.fileKey && !used.has(r.rt));
       if (sameFile.length > 0) {
@@ -356,13 +422,13 @@ function pairRefreshTokens(state: RawScanState): DiscoveredToken[] {
 
     if (chosen) {
       used.add(chosen.rt);
-      byEmail.set(token.email, { ...token, refreshToken: chosen.rt });
+      byAccount.set(key, { ...token, refreshToken: chosen.rt });
     } else {
-      byEmail.set(token.email, token);
+      byAccount.set(key, token);
     }
   }
 
-  return [...byEmail.values()].sort((a, b) => b.iat - a.iat);
+  return [...byAccount.values()].sort((a, b) => b.iat - a.iat);
 }
 
 /**
@@ -378,15 +444,11 @@ export function scanExpiredAccountsWithRefreshToken(): DiscoveredToken[] {
   const state = scanAllBrowserTokens();
   const expired: DiscoveredToken[] = [];
 
-  for (const hit of state.tokenHits) {
+  for (const hit of state.expiredTokenHits) {
     const payload = hit.payload;
-    // 只关心「签名结构像鱼鱼API、但已过期」的
-    if (!payload || typeof payload.email !== 'string') continue;
-    if (payload.user_id === undefined || payload.token_version === undefined) continue;
-    if (typeof payload.exp !== 'number' || payload.exp * 1000 > nowMs) continue;
-
     expired.push({
       email: payload.email,
+      site: hit.site,
       token: hit.token,
       iat: payload.iat,
       exp: payload.exp,
@@ -400,8 +462,10 @@ export function scanExpiredAccountsWithRefreshToken(): DiscoveredToken[] {
   const merged: RawScanState = {
     ...state,
     tokens: state.tokens.concat(expired.map(e => ({
-      email: e.email, token: e.token, iat: e.iat, exp: e.exp, browser: e.browser, profile: e.profile
-    })))
+      email: e.email, site: e.site, token: e.token, iat: e.iat, exp: e.exp, browser: e.browser, profile: e.profile
+    }))),
+    // pairRefreshTokens 靠 tokenHits 找同文件/同源的 rt；过期命中也要并进来
+    tokenHits: state.tokenHits.concat(state.expiredTokenHits)
   };
   const paired = pairRefreshTokens(merged);
   // 只返回带 rt 的过期账号（没 rt 的救不回来，没必要暴露）
@@ -451,21 +515,23 @@ export async function scanRunningBrowsersForToken(): Promise<SyncResult> {
     };
   }
 
-  // 按 iat 从新到旧依次验证，优先选择最后一次登录的账号
+  // 按 iat 从新到旧依次验证，优先选择最后一次登录的账号。
+  // 验证必须打该 token 自己的站点：sub 的 token 在 www 上一律 401。
   for (const item of all) {
     try {
-      const client = new YuyuApiClient(item.token);
+      const client = new YuyuApiClient(item.token, siteBaseUrl(item.site), item.site);
       const profile = await client.getProfile();
       return {
         success: true,
         browser: item.browser,
+        site: item.site,
         token: item.token,
         email: profile.email || item.email,
         balance: Number(profile.balance || 0),
         iat: item.iat,
         allDiscovered: all,
         diagnostics,
-        message: `已同步 ${item.browser} 当前登录账号 ${profile.email || item.email} ($${Number(profile.balance || 0).toFixed(2)})`
+        message: `已同步 ${item.browser} 当前登录账号 ${profile.email || item.email} (${SITES[item.site].label} · $${Number(profile.balance || 0).toFixed(2)})`
       };
     } catch {
       continue;
@@ -476,19 +542,19 @@ export async function scanRunningBrowsersForToken(): Promise<SyncResult> {
     success: false,
     needsLogin: true,
     diagnostics,
-    message: '本地浏览器中的登录凭证已过期，请在浏览器重新登录 sub.anzhiyu.com'
+    message: '本地浏览器中的登录凭证已过期，请在浏览器重新登录鱼鱼API（旧站 / 新站）'
   };
 }
 
 /**
  * 使用系统默认浏览器打开鱼鱼API 登录页，并轮询本地 LevelDB 捕获新登录的 Token。
  */
-export async function launchAndCaptureToken(timeoutMs = 90000): Promise<SyncResult> {
+export async function launchAndCaptureToken(timeoutMs = 90000, site: YuyuSiteId = DEFAULT_SITE): Promise<SyncResult> {
   const beforeScan = scanLocalLevelDBTokens();
   const baselineIat = beforeScan.latest?.iat || 0;
 
-  // 调用系统默认浏览器打开 sub.anzhiyu.com/usage
-  openExternal('https://sub.anzhiyu.com/usage');
+  // 调用系统默认浏览器打开该站点的使用记录页（登录态就在这个 origin 下写入）
+  openExternal(siteInfo(site).usageUrl);
 
   const startTime = Date.now();
   while (Date.now() - startTime < timeoutMs) {

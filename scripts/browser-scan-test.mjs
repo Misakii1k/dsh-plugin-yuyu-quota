@@ -59,9 +59,10 @@ const HOUR = 3600;
 function writeLevelDb(dir, fileName, payloads) {
   fs.mkdirSync(dir, { recursive: true });
   const chunks = [];
-  for (const { key, value } of payloads) {
+  for (const { key, value, site } of payloads) {
     chunks.push(Buffer.from([0x00, 0x01]));
-    chunks.push(Buffer.from(`_https://sub.anzhiyu.com`));
+    // 真实 leveldb 记录以 `_https://<host>` 标记 origin；站点归属就靠它判定
+    chunks.push(Buffer.from(`_https://${site || 'sub'}.anzhiyu.com`));
     chunks.push(Buffer.from([0x00, 0x01]));
     chunks.push(Buffer.from(key));
     chunks.push(Buffer.from([0x00, 0x01]));
@@ -292,6 +293,86 @@ await test('没有任何浏览器时 diagnostics 为空且给出可读提示', a
       assert.equal(result.success, false);
       assert.equal(result.needsLogin, true);
       assert.match(result.message, /未找到任何浏览器数据目录|未检测到/);
+    }
+  );
+});
+
+console.log('[browser-scan-test] 8) sub / www 双站点分离');
+await test('同一邮箱在两个站点被识别为两个账号', async () => {
+  const tSub = fakeAccessToken({ email: 'same@example.com', iat: now, exp: now + 24 * HOUR });
+  const tWww = fakeAccessToken({ email: 'same@example.com', iat: now + 5, exp: now + 24 * HOUR });
+  const rtSub = 'rt_' + 'c3'.repeat(32);
+  const rtWww = 'rt_' + 'd4'.repeat(32);
+  await withFakeBrowsers(
+    ({ local }) => {
+      const dir = path.join(local, 'Microsoft/Edge/User Data/Default/Local Storage/leveldb');
+      writeLevelDb(dir, '000001.log', [
+        { key: 'auth_token', value: tSub, site: 'sub' },
+        { key: 'refresh_token', value: rtSub, site: 'sub' },
+        { key: 'auth_token', value: tWww, site: 'www' },
+        { key: 'refresh_token', value: rtWww, site: 'www' }
+      ]);
+    },
+    async (mod) => {
+      const { all } = mod.scanLocalLevelDBTokens();
+      assert.equal(all.length, 2, '同一邮箱在两个站点必须各算一个账号');
+      const bySite = new Map(all.map((a) => [a.site, a]));
+      assert.ok(bySite.get('sub'), '应识别出 sub 站点账号');
+      assert.ok(bySite.get('www'), '应识别出 www 站点账号');
+      assert.equal(bySite.get('sub').refreshToken, rtSub, 'sub 的 rt 只能配给 sub');
+      assert.equal(bySite.get('www').refreshToken, rtWww, 'www 的 rt 只能配给 www');
+    }
+  );
+});
+
+await test('只有 www 登录态时不会误判成 sub', async () => {
+  const token = fakeAccessToken({ email: 'wwwonly@example.com', iat: now, exp: now + 24 * HOUR });
+  await withFakeBrowsers(
+    ({ local }) => {
+      const dir = path.join(local, 'Google/Chrome/User Data/Default/Local Storage/leveldb');
+      writeLevelDb(dir, '000001.log', [{ key: 'auth_token', value: token, site: 'www' }]);
+    },
+    async (mod) => {
+      const { all } = mod.scanLocalLevelDBTokens();
+      assert.equal(all.length, 1);
+      assert.equal(all[0].site, 'www');
+    }
+  );
+});
+
+console.log('[browser-scan-test] 9) 过期 token 的 refresh token 恢复');
+await test('过期 token 仍能与同源 rt 配对并被恢复', async () => {
+  const expired = fakeAccessToken({ email: 'expired@example.com', iat: now - 48 * HOUR, exp: now - 24 * HOUR });
+  const rt = 'rt_' + 'e5'.repeat(32);
+  await withFakeBrowsers(
+    ({ local }) => {
+      const dir = path.join(local, 'Microsoft/Edge/User Data/Default/Local Storage/leveldb');
+      writeLevelDb(dir, '000001.log', [
+        { key: 'auth_token', value: expired, site: 'www' },
+        { key: 'refresh_token', value: rt, site: 'www' }
+      ]);
+    },
+    async (mod) => {
+      // 常规同步仍然不暴露过期 token
+      assert.equal(mod.scanLocalLevelDBTokens().all.length, 0, '过期 token 不应进入常规同步列表');
+      const recoverable = mod.scanExpiredAccountsWithRefreshToken();
+      assert.equal(recoverable.length, 1, '带 rt 的过期账号应可恢复');
+      assert.equal(recoverable[0].email, 'expired@example.com');
+      assert.equal(recoverable[0].site, 'www');
+      assert.equal(recoverable[0].refreshToken, rt, '恢复时必须带上同源 rt');
+    }
+  );
+});
+
+await test('过期 token 但没有 rt 时不进入恢复列表', async () => {
+  const expired = fakeAccessToken({ email: 'no-rt@example.com', iat: now - 48 * HOUR, exp: now - 24 * HOUR });
+  await withFakeBrowsers(
+    ({ local }) => {
+      const dir = path.join(local, 'Google/Chrome/User Data/Default/Local Storage/leveldb');
+      writeLevelDb(dir, '000001.log', [{ key: 'auth_token', value: expired }]);
+    },
+    async (mod) => {
+      assert.equal(mod.scanExpiredAccountsWithRefreshToken().length, 0);
     }
   );
 });

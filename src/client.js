@@ -4,6 +4,8 @@
   var PLUGIN_ID = 'dsh-plugin-yuyu-quota';
   var STORAGE_KEY = 'dsh_yuyu_multi_store_v1';
   var BRIDGE_BASE = 'http://127.0.0.1:53788/yuyu-quota/api';
+  /** apply(ctx) 注入的 DSH 客户端上下文；用于直接调用 DSH 自带模型选择接口 */
+  var dshClientCtx = null;
 
   var SVG_WALLET = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12V7H4a2 2 0 0 1 0-4h16v4"/><path d="M2 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M17 12a2 2 0 0 0 0 4h4v-4Z"/></svg>';
   var SVG_FISH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12c.94-3.46 4.94-6 8.5-6 3.56 0 6.06 2.54 7 6-.94 3.46-3.44 6-7 6s-7.56-2.54-8.5-6Z"/><path d="M18 12v.5"/><path d="M16 17.93a9.77 9.77 0 0 1 0-11.86"/><path d="M7 10.67C7 8 5.58 5.97 2.73 5.5c-1 1.5-1 5 .5 6.5-1.5 1.5-1.5 5-.5 6.5 2.85-.47 4.27-2.5 4.27-5.17v-2.66Z"/></svg>';
@@ -19,6 +21,8 @@
   var SVG_SUN = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>';
   var SVG_MOON = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
   var SVG_MONITOR = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>';
+  var SVG_EYE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.06 12.31a1 1 0 0 1 0-.62A10.75 10.75 0 0 1 12 5a10.75 10.75 0 0 1 9.94 6.69 1 1 0 0 1 0 .62A10.75 10.75 0 0 1 12 19a10.75 10.75 0 0 1-9.94-6.69Z"/><circle cx="12" cy="12" r="3"/></svg>';
+  var SVG_EYE_OFF = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M2 2l20 20"/></svg>';
 
   var INTERVAL_MS_MAP = {
     '1s': 1000,
@@ -110,6 +114,11 @@
   var tokenStore = {
     activeEmail: '',
     email: '',
+    /** 当前激活账号所属站点（内部 id：sub=旧站 / www=新站） */
+    site: 'sub',
+    /** 当前站点的充值中心 / 使用记录页（后端下发，SSR 失败时本地兜底） */
+    rechargeUrl: 'https://sub.anzhiyu.com/recharge-center',
+    usageUrl: 'https://sub.anzhiyu.com/usage',
     balance: 0.00,
     totalRecharged: 0.00,
     todayCost: 0.0000,
@@ -163,6 +172,41 @@
   /** 允许的提示音（避免 localStorage 被塞入任意值） */
   var SOUND_EFFECTS = ['task-end-a', 'cost-default', 'minecraft-exp-orb', 'duck', 'fx1', 'none'];
 
+  /** 余额隐私模式：开启后所有余额数字显示为 ••••（成本/用量不受影响） */
+  function isBalanceHidden() {
+    return !!(tokenStore.preferences && tokenStore.preferences.hideBalance);
+  }
+
+  /** 金额统一入口：隐藏时不泄露位数与量级 */
+  function moneyText(value, digits) {
+    if (isBalanceHidden()) return '••••';
+    return '$' + Number(value || 0).toFixed(digits === undefined ? 2 : digits);
+  }
+
+  /** 显示 `sub:xxx@qq.com` 这类账号键时只留邮箱 */
+  function bareEmail(value) {
+    var raw = String(value || '');
+    var m = raw.match(/^[a-z]+:(.+)$/);
+    return m ? m[1] : raw;
+  }
+
+  /** 账号所属站点；历史账号（无 site / snapshot.site）固定按旧站处理 */
+  function siteIdOfAccount(acc) {
+    return (acc && acc.site) || (acc && acc.snapshot && acc.snapshot.site) || 'sub';
+  }
+
+  /** 站点徽标：旧站 sub / 新站 www */
+  /** 充值中心兜底地址（后端不可达时也要跳到当前账号的站点） */
+  function rechargeUrlForSite(site) {
+    return site === 'www'
+      ? 'https://www.anzhiyu.com/recharge-center'
+      : 'https://sub.anzhiyu.com/recharge-center';
+  }
+
+  function siteHostOf(site) {
+    return site === 'www' ? 'www.anzhiyu.com' : 'sub.anzhiyu.com';
+  }
+
   try {
     var savedTheme = window.localStorage.getItem('dsh_yuyu_theme');
     if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
@@ -196,13 +240,184 @@
       if (parsed && parsed.activeEmail && Array.isArray(parsed.accounts) && parsed.accounts.length > 0) {
         tokenStore.activeEmail = parsed.activeEmail;
         tokenStore.accounts = parsed.accounts;
-        var activeItem = parsed.accounts.find(function(a) { return a.email === parsed.activeEmail; }) || parsed.accounts[0];
+        var activeItem = findAccountByKey(parsed.accounts, parsed.activeEmail) || parsed.accounts[0];
         if (activeItem && activeItem.snapshot) {
           applySnapshotFields(activeItem.snapshot);
         }
       }
     }
   } catch (e) {}
+
+  // 账号唯一键：`<site>:<email>`（sub / www 是两套独立后端，同一邮箱可以是两个账号）
+  function accountKeyOf(acc) {
+    if (!acc) return '';
+    if (acc.key) return acc.key;
+    return siteIdOfAccount(acc) + ':' + String(acc.email || '').trim().toLowerCase();
+  }
+
+  function findAccountByKey(list, key) {
+    if (!list || !list.length) return null;
+    var target = String(key || '');
+    var byKey = list.find(function(a) { return accountKeyOf(a) === target; });
+    if (byKey) return byKey;
+    // 兼容历史裸邮箱：同邮箱多站点时优先当前激活站点
+    var bare = bareEmail(target).trim().toLowerCase();
+    var preferredSite = tokenStore.site || 'sub';
+    return list.find(function(a) {
+      return String(a.email || '').trim().toLowerCase() === bare && siteIdOfAccount(a) === preferredSite;
+    }) || list.find(function(a) {
+      return String(a.email || '').trim().toLowerCase() === bare;
+    }) || null;
+  }
+
+  function siteBadgeLabel(acc) {
+    return siteIdOfAccount(acc) === 'www' ? '新' : '旧';
+  }
+
+  /** 当前 DSH 对话的 sessionId：由会话头部插槽写入，切换对话时会同步更新 */
+  function currentDshSessionId() {
+    try {
+      return String(window.__yuyuCurrentSessionId || '').trim();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /**
+   * 从 DSH 自带模型目录里找站点对应的供应商。
+   *
+   * 不额外维护一份供应商配置：优先认 DSH 里现成的 provider id（旧站 fish、
+   * 新站 yuyu），找不到时再按名称兜底；这也正是 DSH 自己模型菜单用的同一份目录。
+   */
+  function providerGroupForSite(catalog, site) {
+    var groups = (catalog && catalog.groups) || [];
+    var exactId = site === 'www' ? 'yuyu' : 'fish';
+    var exact = groups.find(function(group) { return String(group.id || '') === exactId; });
+    if (exact) return exact;
+
+    var aliases = site === 'www'
+      ? ['yuyu', 'new', 'www', '新', '鱼鱼new']
+      : ['fish', 'sub', 'old', '旧', '鱼鱼'];
+    var opposite = site === 'www'
+      ? ['fish', 'sub', 'old', '旧']
+      : ['yuyu', 'new', 'www', '新', '鱼鱼new'];
+
+    var best = null;
+    var bestScore = 0;
+    groups.forEach(function(group) {
+      var id = String(group.id || '').toLowerCase();
+      var name = String(group.name || '').toLowerCase();
+      var blocked = opposite.some(function(alias) {
+        return id.indexOf(alias) !== -1 || name.indexOf(alias) !== -1;
+      });
+      if (blocked) return;
+      var score = 0;
+      aliases.forEach(function(alias) {
+        if (id === alias) score = Math.max(score, 100);
+        else if (id.indexOf(alias) !== -1) score = Math.max(score, 60);
+        if (name.indexOf(alias) !== -1) score = Math.max(score, 40);
+      });
+      if (score > bestScore) {
+        best = group;
+        bestScore = score;
+      }
+    });
+    return best;
+  }
+
+  /** 切换时尽量保留当前 DSH 的推理强度；目标模型不支持则退回模型自己的默认值 */
+  function pickDshReasoningEffort(model, catalog) {
+    var efforts = (model && model.reasoning && model.reasoning.efforts) || [];
+    var desired = catalog && catalog.default && catalog.default.reasoningEffort;
+    if (desired && efforts.some(function(effort) { return effort.id === desired; })) return desired;
+    return model && model.reasoning ? model.reasoning.defaultEffort : undefined;
+  }
+
+  /** DSH 客户端 remote.session：与 DSH 自带 /model 菜单使用的是同一套接口 */
+  function dshRemoteSession() {
+    var ctx = dshClientCtx;
+    if (!ctx) return null;
+    try {
+      if (ctx.remote && ctx.remote.session) return ctx.remote.session;
+      if (typeof ctx.get === 'function') {
+        var remote = ctx.get('remote');
+        if (remote && remote.session) return remote.session;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * 把当前对话的模型供应商切到当前账号所属站点。
+   *
+   * 直接调用 DSH 自带的 session.modelCatalog / session.selectModel，不新增
+   * 后端配置、不写 API Key；selectModel 成功后会由 DSH 自己把该选择保存为默认。
+   */
+  function switchDshApi() {
+    var activeAcc = findAccountByKey(tokenStore.accounts, tokenStore.activeEmail);
+    var site = activeAcc ? siteIdOfAccount(activeAcc) : (tokenStore.site || 'sub');
+    var sessionId = currentDshSessionId();
+    if (!sessionId) {
+      showTip('请先打开一个已有对话，再切换 API', true);
+      return;
+    }
+
+    var session = dshRemoteSession();
+    if (!session || typeof session.modelCatalog !== 'function' || typeof session.selectModel !== 'function') {
+      showTip('DSH 模型选择接口暂不可用，请重启 DSH 后重试', true);
+      return;
+    }
+
+    var btn = document.getElementById('yuyu-api-switch');
+    var oldText = btn ? btn.textContent : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '切换中…';
+    }
+
+    var restore = function() {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = oldText || 'API';
+      }
+    };
+
+    Promise.resolve()
+      .then(function() { return session.modelCatalog(); })
+      .then(function(catalog) {
+        var group = providerGroupForSite(catalog, site);
+        if (!group || !group.models || !group.models.length) {
+          throw new Error('DSH 模型目录里没有' + (site === 'www' ? '新站' : '旧站') + '对应的供应商，请先在 DSH 模型设置里配置好 API');
+        }
+
+        var preferredModel = catalog && catalog.default && catalog.default.model;
+        var model = group.models.find(function(item) { return item.id === preferredModel; }) || group.models[0];
+        var selection = {
+          sessionId: sessionId,
+          provider: group.id,
+          model: model.id
+        };
+        var effort = pickDshReasoningEffort(model, catalog);
+        if (effort) selection.reasoningEffort = effort;
+
+        return session.selectModel(selection).then(function(result) {
+          return {
+            group: group,
+            model: model,
+            selected: result && result.selected ? result.selected : selection
+          };
+        });
+      })
+      .then(function(info) {
+        var siteName = site === 'www' ? '新站' : '旧站';
+        showTip('已切到 ' + siteName + ' API · ' + (info.group.name || info.group.id) + ' / ' + (info.model.name || info.model.id));
+        restore();
+      }, function(err) {
+        var message = err && err.message ? err.message : String(err || '未知错误');
+        showTip('切换 API 失败：' + message, true);
+        restore();
+      });
+  }
 
   function saveClientStore() {
     try {
@@ -216,6 +431,7 @@
   function applySnapshotFields(snap) {
     if (!snap) return;
     if (snap.email) tokenStore.email = snap.email;
+    if (snap.site) tokenStore.site = snap.site;
     if (typeof snap.balance === 'number') tokenStore.balance = snap.balance;
     if (typeof snap.totalRecharged === 'number') tokenStore.totalRecharged = snap.totalRecharged;
     if (typeof snap.todayCost === 'number') tokenStore.todayCost = snap.todayCost;
@@ -244,6 +460,56 @@
     return formatSyncTime() + ' 同步';
   }
 
+  /** 切号乐观更新前的视图快照字段（失败时必须完整还原，不能只改回 activeEmail） */
+  var ACCOUNT_VIEW_KEYS = [
+    'activeEmail', 'email', 'site', 'balance', 'totalRecharged', 'todayCost', 'todayRawCost',
+    'todayTokens', 'todayRequests', 'keysCount', 'totalRequests', 'totalActualCost',
+    'fetchedAt', 'serverUpdatedAt'
+  ];
+
+  function captureAccountView() {
+    var view = {};
+    ACCOUNT_VIEW_KEYS.forEach(function(k) { view[k] = tokenStore[k]; });
+    return view;
+  }
+
+  function restoreAccountView(view) {
+    if (!view) return;
+    ACCOUNT_VIEW_KEYS.forEach(function(k) { tokenStore[k] = view[k]; });
+    (tokenStore.accounts || []).forEach(function(a) {
+      a.active = accountKeyOf(a) === tokenStore.activeEmail;
+    });
+    saveClientStore();
+  }
+
+  /**
+   * 余额隐私 UI 同步：眼睛按钮、设置开关、金额前缀。
+   * 必须放在模块作用域——updateUI() 在挂载函数之外，也能安全调用。
+   */
+  function syncBalancePrivacyUI() {
+    var hidden = isBalanceHidden();
+    var eye = document.getElementById('yuyu-balance-eye');
+    if (eye) {
+      // 每次轮询都重写 innerHTML 会持续制造新节点（实测让 updateUI 超预算），
+      // 只有隐私状态真正变化时才替换 SVG。
+      var eyeState = hidden ? 'off' : 'on';
+      if (eye.getAttribute('data-eye-state') !== eyeState) {
+        eye.innerHTML = hidden ? SVG_EYE_OFF : SVG_EYE;
+        eye.setAttribute('data-eye-state', eyeState);
+        var label = hidden ? '显示余额' : '隐藏余额';
+        eye.setAttribute('aria-label', label);
+        eye.setAttribute('title', label);
+      }
+    }
+    var sw = document.getElementById('yuyu-hide-balance-switch');
+    if (sw) {
+      sw.classList.toggle('on', !hidden);
+      sw.setAttribute('aria-checked', hidden ? 'false' : 'true');
+    }
+    var cur = document.getElementById('yuyu-card-cur');
+    if (cur) cur.style.display = hidden ? 'none' : '';
+  }
+
   function applyBackendPayload(body) {
     if (!body) return false;
     if (Array.isArray(body.accounts) && body.accounts.length > 0) {
@@ -252,6 +518,17 @@
     if (body.activeEmail) {
       tokenStore.activeEmail = body.activeEmail;
     }
+    if (body.activeSite === 'sub' || body.activeSite === 'www') {
+      tokenStore.site = body.activeSite;
+    }
+    if (typeof body.rechargeUrl === 'string') {
+      tokenStore.rechargeUrl = body.rechargeUrl;
+    }
+    if (typeof body.usageUrl === 'string') {
+      tokenStore.usageUrl = body.usageUrl;
+    }
+    var activeAcc = findAccountByKey(tokenStore.accounts, tokenStore.activeEmail);
+    if (activeAcc) tokenStore.site = siteIdOfAccount(activeAcc);
     if (body.refreshInterval && INTERVAL_MS_MAP[body.refreshInterval]) {
       currentInterval = body.refreshInterval;
     }
@@ -297,7 +574,7 @@
       // 只有真实拿到服务端数据才推进“已同步”时间
       tokenStore.lastSync = formatSyncTime();
     } else {
-      var found = tokenStore.accounts.find(function(a) { return a.email === tokenStore.activeEmail; }) || tokenStore.accounts[0];
+      var found = findAccountByKey(tokenStore.accounts, tokenStore.activeEmail) || tokenStore.accounts[0];
       if (found) {
         tokenStore.email = found.email;
         tokenStore.balance = Number(found.balance || 0);
@@ -326,6 +603,7 @@
   function fetchRemoteBalance(callback, options) {
     var opts = options || {};
     var promise;
+    var switchRollback = null;
 
     if (opts.action === 'sync') {
       promise = requestBackend('/sync', {
@@ -336,12 +614,14 @@
           token: opts.token || undefined
         })
       });
-    } else if (opts.action === 'switch' && opts.email) {
+    } else if (opts.action === 'switch' && (opts.key || opts.email)) {
       // 先在本地秒切 UI（零延迟响应），再请求后端刷新最新值
-      var localTarget = tokenStore.accounts.find(function(a) { return a.email === opts.email; });
+      var localTarget = findAccountByKey(tokenStore.accounts, opts.key || opts.email);
       if (localTarget) {
-        tokenStore.activeEmail = localTarget.email;
-        tokenStore.accounts.forEach(function(a) { a.active = (a.email === localTarget.email); });
+        switchRollback = captureAccountView();
+        tokenStore.activeEmail = accountKeyOf(localTarget);
+        tokenStore.site = siteIdOfAccount(localTarget);
+        tokenStore.accounts.forEach(function(a) { a.active = (accountKeyOf(a) === tokenStore.activeEmail); });
         if (localTarget.snapshot) applySnapshotFields(localTarget.snapshot);
         else {
           tokenStore.email = localTarget.email;
@@ -354,13 +634,18 @@
       promise = requestBackend('/switch', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: opts.email })
+        // 必须把完整 key 发给后端：同一邮箱可能在旧站与新站各有一个账号
+        body: JSON.stringify({
+          key: opts.key || (localTarget ? accountKeyOf(localTarget) : undefined),
+          email: opts.email,
+          site: opts.site || (localTarget ? siteIdOfAccount(localTarget) : undefined)
+        })
       });
-    } else if (opts.action === 'remove' && opts.email) {
+    } else if (opts.action === 'remove' && (opts.key || opts.email)) {
       promise = requestBackend('/remove', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: opts.email })
+        body: JSON.stringify({ key: opts.key, email: opts.email })
       });
     } else {
       var query = opts.syncBrowser ? '?syncBrowser=1' : '?syncBrowser=0';
@@ -373,6 +658,11 @@
         if (callback) callback(tokenStore, null, body && body.message);
       })
       .catch(function() {
+        // 切号失败（账号不存在 / 后端不可达）必须回滚乐观更新，
+        // 否则界面会一直停在并不存在的账号上，余额还是上一个账号的。
+        if (switchRollback) {
+          restoreAccountView(switchRollback);
+        }
         tokenStore.online = false;
         tokenStore.failCount = (tokenStore.failCount || 0) + 1;
         // 不推进 lastSync：显示的是最后一次真实成功的时间
@@ -394,11 +684,25 @@
     if (!rowEl) return;
 
     var accounts = (tokenStore.accounts || []).filter(function(a) { return a && a.email; });
-    var signature = tokenStore.activeEmail + '|' + accounts.map(function(a) {
-      return a.email + ':' + Number(typeof a.balance === 'number' ? a.balance : (a.snapshot ? a.snapshot.balance : 0)).toFixed(2);
+    var signature = tokenStore.activeEmail + '|' + (isBalanceHidden() ? 'hidden' : 'shown') + '|' + accounts.map(function(a) {
+      // 同邮箱跨站点时只拼 email 会撞指纹；必须带上站点 key。
+      // 余额不进指纹：它每轮都可能变，放进来会让整排胶囊每 30 秒重建一次。
+      return accountKeyOf(a);
     }).join(',');
 
-    if (signature === accountRowSignature && rowEl.childNodes.length > 0) return;
+    if (signature === accountRowSignature && rowEl.childNodes.length > 0) {
+      // 账号没变，只刷新 tooltip / aria，避免重建节点和丢焦点
+      Array.prototype.forEach.call(rowEl.querySelectorAll('.yuyu-avatar-chip'), function(chip) {
+        var key = chip.getAttribute('data-key');
+        if (!key) return;
+        var acc = accounts.find(function(a) { return accountKeyOf(a) === key; });
+        if (!acc) return;
+        var title = chipTitle(acc, key === tokenStore.activeEmail);
+        chip.title = title;
+        chip.setAttribute('aria-label', title);
+      });
+      return;
+    }
     accountRowSignature = signature;
 
     rowEl.innerHTML = '';
@@ -410,21 +714,28 @@
       return (name.slice(0, 2) || 'ID').toUpperCase();
     }
 
+    function chipTitle(acc, isActive) {
+      var balNum = typeof acc.balance === 'number' ? acc.balance : (acc.snapshot ? acc.snapshot.balance : 0);
+      return acc.email + ' · ' + siteBadgeLabel(acc) + ' · ' + moneyText(balNum, 2) + (isActive ? '（当前）' : '（点击切换）');
+    }
+
     function makeChip(acc) {
-      var isActive = acc.email === tokenStore.activeEmail;
+      var key = accountKeyOf(acc);
+      var isActive = key === tokenStore.activeEmail;
       var chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'yuyu-avatar-chip' + (isActive ? ' active' : '');
-      var balNum = typeof acc.balance === 'number' ? acc.balance : (acc.snapshot ? acc.snapshot.balance : 0);
-      chip.title = acc.email + ' · $' + Number(balNum || 0).toFixed(2) + (isActive ? '（当前）' : '（点击切换）');
-      chip.setAttribute('aria-label', chip.title);
+      chip.setAttribute('data-key', key);
+      var title = chipTitle(acc, isActive);
+      chip.title = title;
+      chip.setAttribute('aria-label', title);
       chip.textContent = shortLabel(acc.email);
       chip.addEventListener('click', function(e) {
         e.stopPropagation();
-        if (acc.email === tokenStore.activeEmail) return;
+        if (isActive) return;
         fetchRemoteBalance(function(d, _err, msg) {
           showTip(msg || ('已切换至 ' + d.email));
-        }, { action: 'switch', email: acc.email });
+        }, { action: 'switch', email: acc.email, key: key, site: siteIdOfAccount(acc) });
       });
       return chip;
     }
@@ -478,7 +789,8 @@
 
   // 刷新 DOM 显示
   function updateUI() {
-    var isLow = tokenStore.balance <= tokenStore.alertThreshold;
+    // 隐私模式下连「低额变红」也不能透露：颜色本身就是余额状态的侧信道
+    var isLow = !isBalanceHidden() && tokenStore.balance <= tokenStore.alertThreshold;
     var pillVal = document.getElementById('yuyu-pill-val');
     var cardBal = document.getElementById('yuyu-card-bal');
     var cardRecharge = document.getElementById('yuyu-card-recharge');
@@ -488,13 +800,16 @@
     var syncTime = document.getElementById('yuyu-sync-time');
 
     if (pillVal) {
-      pillVal.textContent = '$' + tokenStore.balance.toFixed(2);
+      pillVal.textContent = moneyText(tokenStore.balance, 2);
       pillVal.style.color = isLow ? 'var(--yp-danger)' : 'var(--yp-ink)';
     }
     if (cardBal) {
       var nextBal = tokenStore.balance.toFixed(2);
-      // 只有数值真的变了才播放跳动，否则每秒轮询都会闪一下
-      if (!balanceRendered || cardBal.textContent !== nextBal) {
+      if (isBalanceHidden()) {
+        // 隐私模式：不保留小数位结构，避免从位数推断金额
+        if (cardBal.textContent !== '••••') cardBal.textContent = '••••';
+        balanceRendered = true;
+      } else if (!balanceRendered || cardBal.textContent !== nextBal) {
         // 整数部分突出，小数部分压低一级，让余额读起来是一个量而不是一串数字
         cardBal.innerHTML = '';
         var dotAt = nextBal.indexOf('.');
@@ -513,7 +828,7 @@
         cardBal.classList.add('is-animating');
       }
     }
-    if (cardRecharge) cardRecharge.textContent = '累计充值 $' + tokenStore.totalRecharged.toFixed(2);
+    if (cardRecharge) cardRecharge.textContent = '累计充值 ' + moneyText(tokenStore.totalRecharged, 2);
     if (cardCost) cardCost.textContent = '$' + tokenStore.todayCost.toFixed(4);
     if (cardTokens) {
       cardTokens.textContent = formatTokens(tokenStore.todayTokens);
@@ -524,12 +839,24 @@
 
     // 页眉账号 / 设置页账号
     var headMail = document.getElementById('yuyu-head-mail');
+    var activeAcc = findAccountByKey(tokenStore.accounts, tokenStore.activeEmail) || null;
+    var activeSite = siteBadgeLabel(activeAcc || { site: tokenStore.site });
     if (headMail) {
-      headMail.textContent = tokenStore.email || tokenStore.activeEmail || '未登录';
-      headMail.title = tokenStore.email || tokenStore.activeEmail || '';
+      var mailText = bareEmail(tokenStore.email || tokenStore.activeEmail) || '未登录';
+      headMail.textContent = mailText;
+      headMail.title = mailText + ' · ' + activeSite;
+    }
+    var headSite = document.getElementById('yuyu-head-site');
+    if (headSite) headSite.textContent = activeSite;
+    var apiSwitch = document.getElementById('yuyu-api-switch');
+    if (apiSwitch) {
+      var apiTitle = '把当前对话切到' + activeSite + '站 API（不修改已保存的 Key）';
+      apiSwitch.title = apiTitle;
+      apiSwitch.setAttribute('aria-label', apiTitle);
+      apiSwitch.disabled = !(tokenStore.email || tokenStore.activeEmail);
     }
     var settingsWho = document.getElementById('yuyu-settings-who');
-    if (settingsWho) settingsWho.textContent = tokenStore.email || tokenStore.activeEmail || '未登录';
+    if (settingsWho) settingsWho.textContent = (bareEmail(tokenStore.email || tokenStore.activeEmail) || '未登录') + ' · ' + activeSite;
 
     // 页脚一行摘要：多少密钥、多久刷新一次、什么版本
     var footMeta = document.getElementById('yuyu-foot-meta');
@@ -574,6 +901,7 @@
     }
 
     renderAccountSwitcherDOM();
+    syncBalancePrivacyUI();
   }
 
   // ===================== 浮窗拖动与贴边吸附 =====================
@@ -1052,6 +1380,7 @@
       '  #yuyu-card-popup:not(.yp-settings) #yuyu-view-main { animation: yuyuViewInLeft 0.24s cubic-bezier(0.16, 1, 0.3, 1); }',
       '  .yp-head { display: flex; align-items: center; gap: 9px; padding: 15px 20px 0; }',
       '  .yp-mail { font-size: 12.5px; font-weight: 560; letter-spacing: -0.06px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+      '  .yp-site-tag { font-size: 10px; line-height: 14px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--yp-hair); color: var(--yp-ink2); flex-shrink: 0; }',
       '  .yp-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--yp-muted); white-space: nowrap; }',
       '  .yp-status i { width: 5px; height: 5px; border-radius: 50%; background: var(--yp-accent); box-shadow: 0 0 0 3px rgba(29,111,91,0.1); }',
       '  .yp-status.off i { background: var(--yp-warn); box-shadow: 0 0 0 3px rgba(180,83,9,0.12); }',
@@ -1104,14 +1433,14 @@
       '  .yp-btn.primary { color: var(--yp-paper); background: var(--yp-ink); }',
       '  #yuyu-quota-floating-container.yuyu-dark .yp-btn.primary { color: #12161b; background: #eef1f5; }',
       '  .yp-btn.primary:hover { filter: brightness(1.12); }',
-      '  #yuyu-card-refresh, #yuyu-card-settings-btn {',
+      '  #yuyu-card-refresh, #yuyu-card-settings-btn, #yuyu-balance-eye {',
       '    position: relative;',
       '    width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px; background: transparent;',
       '    color: var(--yp-muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer;',
       '    transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;',
       '  }',
-      '  #yuyu-card-refresh:hover, #yuyu-card-settings-btn:hover { background: var(--yp-chip); color: var(--yp-ink); }',
-      '  #yuyu-card-refresh:active, #yuyu-card-settings-btn:active { transform: scale(0.92); }',
+      '  #yuyu-card-refresh:hover, #yuyu-card-settings-btn:hover, #yuyu-balance-eye:hover { background: var(--yp-chip); color: var(--yp-ink); }',
+      '  #yuyu-card-refresh:active, #yuyu-card-settings-btn:active, #yuyu-balance-eye:active { transform: scale(0.92); }',
       '  .yuyu-sync-tip {',
       '    font-size: 11px; text-align: center; padding: 0 20px; border-radius: 0;',
       '    background: transparent; color: var(--yp-ok); max-height: 0; opacity: 0; overflow: hidden;',
@@ -1218,7 +1547,7 @@
       '    </svg>',
       '    <div style="position:absolute;left:44%;top:38%;transform:translate(-50%,-50%);width:72%;text-align:center;pointer-events:auto;cursor:pointer;">',
       '      <div id="yuyu-whale-bubble-title" style="font-size:11px;font-weight:600;color:var(--yp-svg-label);letter-spacing:0.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">鱼鱼 API 可用余额</div>',
-      '      <div id="yuyu-whale-bubble-amount" style="font-size:24px;font-weight:800;color:var(--yp-svg-amount);line-height:1.15;margin:3px 0;font-variant-numeric:tabular-nums;">$' + tokenStore.balance.toFixed(2) + '</div>',
+      '      <div id="yuyu-whale-bubble-amount" style="font-size:24px;font-weight:800;color:var(--yp-svg-amount);line-height:1.15;margin:3px 0;font-variant-numeric:tabular-nums;">' + moneyText(tokenStore.balance, 2) + '</div>',
       '      <div id="yuyu-whale-bubble-hint" style="font-size:9.5px;color:var(--yp-svg-hint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">点击查看完整资产卡片</div>',
       '    </div>',
       '    <button id="yuyu-whale-bubble-close" type="button" aria-label="关闭余额气泡" style="position:absolute;top:22px;right:46px;background:none;border:none;color:var(--yp-svg-label);cursor:pointer;padding:2px;display:flex;align-items:center;justify-content:center;opacity:0.75;">' + SVG_CLOSE + '</button>',
@@ -1230,7 +1559,7 @@
       '    <i id="yuyu-pill-status-dot" style="display:none;position:absolute;top:-1px;right:-2px;width:5px;height:5px;border-radius:50%;background:var(--yp-warn);box-shadow:0 0 0 1.5px var(--yp-paper);"></i>' +
       '  </span>',
       '  <span style="font-weight:560;font-size:11px;color:var(--yp-muted);letter-spacing:0.2px;">鱼鱼</span>',
-      '  <span id="yuyu-pill-val" style="color:var(--yp-ink);font-weight:650;font-variant-numeric:tabular-nums;font-size:12.5px;">$' + tokenStore.balance.toFixed(2) + '</span>',
+      '  <span id="yuyu-pill-val" style="color:var(--yp-ink);font-weight:650;font-variant-numeric:tabular-nums;font-size:12.5px;">' + moneyText(tokenStore.balance, 2) + '</span>',
       '</div>',
       // ===================== 应用内通知气泡 =====================
       '<div id="yuyu-bubble-popup">',
@@ -1245,7 +1574,7 @@
       '  </div>',
       '  <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--yp-muted);margin-top:4px;">',
       '    <span id="yuyu-bubble-tokens" style="font-variant-numeric:tabular-nums;color:var(--yp-ink2);">0 Tokens</span>',
-      '    <span>扣后 <span id="yuyu-bubble-balance" style="font-weight:620;color:var(--yp-ink);font-variant-numeric:tabular-nums;">$' + tokenStore.balance.toFixed(2) + '</span></span>',
+      '    <span>扣后 <span id="yuyu-bubble-balance" style="font-weight:620;color:var(--yp-ink);font-variant-numeric:tabular-nums;">' + moneyText(tokenStore.balance, 2) + '</span></span>',
       '  </div>',
       '  <div style="display:flex;justify-content:flex-end;margin-top:10px;">',
       '    <button id="yuyu-bubble-view" type="button" class="yp-mini" style="border:none;background:var(--yp-ink);color:var(--yp-paper);">查看详情</button>',
@@ -1257,6 +1586,8 @@
       '  <div id="yuyu-view-main">',
       '    <div class="yp-head">',
       '      <span class="yp-mail" id="yuyu-head-mail">—</span>',
+      '      <span class="yp-site-tag" id="yuyu-head-site">旧</span>',
+      '      <button id="yuyu-balance-eye" type="button" aria-label="隐藏余额" title="隐藏余额">' + SVG_EYE + '</button>',
       '      <span id="yuyu-conn-wrap" class="yp-status"><i></i><span id="yuyu-conn-label">未连接</span></span>',
       '      <span class="yp-sp"></span>',
       '      <div id="yuyu-avatars-row"></div>',
@@ -1266,8 +1597,8 @@
       '    <div class="yp-main">',
       '      <div class="yp-left">',
       '        <div class="yp-label">可用余额</div>',
-      '        <div class="yp-amount"><span class="yp-cur">$</span><span id="yuyu-card-bal">' + tokenStore.balance.toFixed(2) + '</span></div>',
-      '        <div class="yp-sub"><span id="yuyu-card-recharge" title="点击前往充值页面">累计充值 $' + tokenStore.totalRecharged.toFixed(2) + '</span></div>',
+      '        <div class="yp-amount"><span class="yp-cur" id="yuyu-card-cur">$</span><span id="yuyu-card-bal">' + (isBalanceHidden() ? '••••' : tokenStore.balance.toFixed(2)) + '</span></div>',
+      '        <div class="yp-sub"><span id="yuyu-card-recharge" title="点击前往充值页面">累计充值 ' + moneyText(tokenStore.totalRecharged, 2) + '</span></div>',
       '      </div>',
       '      <div class="yp-vrule"></div>',
       '      <div class="yp-right">',
@@ -1281,6 +1612,7 @@
       '    </div>',
       '    <div class="yp-foot">',
       '      <span class="yp-meta" id="yuyu-foot-meta">—</span>',
+      '      <button id="yuyu-api-switch" type="button" class="yp-btn ghost" title="切换当前对话到当前账号站点的 API">API</button>',
       '      <button id="yuyu-card-sync" type="button" class="yp-btn ghost" title="从浏览器读取最新登录账号">',
       '        <span style="display:inline-flex;">' + SVG_BROWSER + '</span>',
       '        <span id="yuyu-sync-label">同步</span>',
@@ -1329,6 +1661,9 @@
       '            <button type="button" class="yuyu-style-tab" data-val="pill">胶囊</button>',
       '          </span>',
       '        </div>',
+      '        <div class="yp-srow"><span class="yp-sk">显示余额</span><span class="yp-push"></span>',
+      '          <button type="button" class="yp-sw" id="yuyu-hide-balance-switch" role="switch" aria-checked="true" aria-label="显示余额"></button>',
+      '        </div>',
 
       '        <div class="yp-gname next">刷新</div>',
       '        <div class="yp-srow"><span class="yp-sk">频率</span><span class="yp-push"></span>',
@@ -1348,6 +1683,13 @@
       '        <div class="yp-gname">提醒</div>',
       '        <div class="yp-srow"><span class="yp-sk">完成时通知</span><span class="yp-push"></span>',
       '          <button type="button" class="yp-sw" id="yuyu-notify-switch" role="switch" aria-checked="true" aria-label="完成时通知"></button>',
+      '        </div>',
+      // 子 Agent（子会话）完成时是否也弹提醒：默认不打扰，但给用户一个显式开关
+      '        <div class="yp-srow"><span class="yp-sk">子 Agent 完成时通知</span><span class="yp-push"></span>',
+      '          <button type="button" class="yp-sw" id="yuyu-notify-subagent-switch" role="switch" aria-checked="true" aria-label="子 Agent 完成时通知"></button>',
+      '        </div>',
+      '        <div class="yp-srow"><span class="yp-sk">等待选择时通知</span><span class="yp-push"></span>',
+      '          <button type="button" class="yp-sw" id="yuyu-notify-prompt-switch" role="switch" aria-checked="true" aria-label="等待选择时通知"></button>',
       '        </div>',
       '        <div class="yp-srow"><span class="yp-sk">方式</span><span class="yp-push"></span>',
       '          <select id="yuyu-notify-mode" class="yp-sel">',
@@ -1425,11 +1767,16 @@
 
     var card = container.querySelector('#yuyu-card-popup');
     var syncBtn = container.querySelector('#yuyu-card-sync');
+    var apiSwitchBtn = container.querySelector('#yuyu-api-switch');
     var refreshBtn = container.querySelector('#yuyu-card-refresh');
     var settingsBtn = container.querySelector('#yuyu-card-settings-btn');
     var settingsBackBtn = container.querySelector('#yuyu-settings-back');
     var settingsDoneBtn = container.querySelector('#yuyu-settings-done');
     var notifySwitch = container.querySelector('#yuyu-notify-switch');
+    var notifySubagentSwitch = container.querySelector('#yuyu-notify-subagent-switch');
+    var notifyPromptSwitch = container.querySelector('#yuyu-notify-prompt-switch');
+    var balanceEyeBtn = container.querySelector('#yuyu-balance-eye');
+    var hideBalanceSwitch = container.querySelector('#yuyu-hide-balance-switch');
     var topupBtn = container.querySelector('#yuyu-open-topup');
     var syncLabel = container.querySelector('#yuyu-sync-label');
     var cardRecharge = container.querySelector('#yuyu-card-recharge');
@@ -1620,8 +1967,8 @@
       cardRecharge.addEventListener('click', function(e) {
         e.stopPropagation();
         showTip('正在前往充值页面…');
-        requestBackend('/open-topup', { method: 'POST' }).catch(function() {
-          window.open('https://sub.anzhiyu.com/recharge-center', '_blank');
+        requestBackend('/open-topup', { method: 'POST', body: JSON.stringify({ site: tokenStore.site }) }).catch(function() {
+          window.open(rechargeUrlForSite(tokenStore.site), '_blank');
         });
       });
     }
@@ -1647,7 +1994,7 @@
         if (whaleBubble && whaleBubble.classList.contains('is-open')) {
           whaleBubble.classList.remove('is-open');
         } else {
-          showWhaleBubble('鱼鱼 API 可用余额', '$' + tokenStore.balance.toFixed(2), '今日已扣 $' + tokenStore.todayCost.toFixed(4) + ' · 双击展开卡片');
+          showWhaleBubble('鱼鱼 API 可用余额', moneyText(tokenStore.balance, 2), '今日已扣 $' + tokenStore.todayCost.toFixed(4) + ' · 双击展开卡片');
           fetchRemoteBalance();
         }
       });
@@ -1693,7 +2040,7 @@
       if (bubbleTitle) bubbleTitle.textContent = report.sessionTitle || (report.reason === 'completed' ? '任务完成' : '任务结束');
       if (bubbleQuota) bubbleQuota.textContent = formatQuotaText(report);
       if (bubbleTokens) bubbleTokens.textContent = (report.tokens ? report.tokens.totalTokens.toLocaleString() : '0') + ' Tokens';
-      if (bubbleBalance) bubbleBalance.textContent = '$' + (report.balanceAfter !== undefined ? report.balanceAfter.toFixed(2) : tokenStore.balance.toFixed(2));
+      if (bubbleBalance) bubbleBalance.textContent = report.balanceAfter !== undefined ? moneyText(report.balanceAfter, 2) : moneyText(tokenStore.balance, 2);
       bubblePopup.classList.add('is-open');
     }
 
@@ -1844,12 +2191,17 @@
             var report = body.lastTurn;
             var prefs = tokenStore.preferences || {};
             var mode = prefs.notifyMode || (prefs.notifyOnComplete !== false ? 'both' : 'off');
-            if (mode === 'both' || mode === 'inapp') {
+            // 子 Agent 的轮次同样会进入 /last-turn；用户关掉「子 Agent 完成时通知」后
+            // 应用内气泡与角标都不该再被它点亮（系统通知侧由后端同名校验）。
+            var subagentMuted = report.isSubagent === true && prefs.notifySubagentMute === true;
+            if (subagentMuted) {
+              // 仍然刷新报告面板，只是不打扰
+            } else if (mode === 'both' || mode === 'inapp') {
               if (mode === 'inapp') {
                 playSound(tokenStore.soundEffect || 'task-end-a');
               }
               if (tokenStore.widgetStyle === 'whale') {
-                showWhaleBubble('任务完成 · 本轮消耗', '-' + formatQuotaText(report), 'Tokens: ' + (report.tokens ? report.tokens.totalTokens.toLocaleString() : '0') + ' · 余额: $' + (report.balanceAfter !== undefined ? report.balanceAfter.toFixed(2) : tokenStore.balance.toFixed(2)));
+                showWhaleBubble('任务完成 · 本轮消耗', '-' + formatQuotaText(report), 'Tokens: ' + (report.tokens ? report.tokens.totalTokens.toLocaleString() : '0') + ' · 余额: ' + (report.balanceAfter !== undefined ? moneyText(report.balanceAfter, 2) : moneyText(tokenStore.balance, 2)));
               } else {
                 showPillBubble(report);
               }
@@ -1905,6 +2257,11 @@
         if (notifyModeSelect) notifyModeSelect.value = prefs.notifyMode;
       }
       syncNotifySwitch();
+      syncNotifySubagentSwitch();
+      syncNotifyPromptSwitch();
+      syncHideBalanceControls();
+      // 余额隐藏/显示会改变多处文案，偏好变更后立即重绘一次
+      updateUI();
       renderTurnReport(tokenStore.lastTurn);
     }
 
@@ -1927,6 +2284,49 @@
       // 关掉时也把音效行压暗，让「不会响」这件事一眼可见
       var soundRow = container.querySelector('#yuyu-notify-sound-row');
       if (soundRow) soundRow.style.opacity = on ? '1' : '0.45';
+      if (notifySubagentSwitch) notifySubagentSwitch.style.opacity = on ? '1' : '0.45';
+    }
+
+    /** 子 Agent 完成时是否提醒（关 = notifySubagentMute） */
+    function currentSubagentNotify() {
+      var prefs = tokenStore.preferences || {};
+      return prefs.notifySubagentMute !== true;
+    }
+
+    function syncNotifySubagentSwitch() {
+      if (!notifySubagentSwitch) return;
+      var on = currentSubagentNotify();
+      notifySubagentSwitch.classList.toggle('on', on);
+      notifySubagentSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+
+    /** 等待选择（权限审批 / 问答选项 / 计划确认）时是否提醒 */
+    function currentPromptNotify() {
+      var prefs = tokenStore.preferences || {};
+      return prefs.notifyOnUserPrompt !== false;
+    }
+
+    function syncNotifyPromptSwitch() {
+      if (!notifyPromptSwitch) return;
+      var on = currentPromptNotify();
+      notifyPromptSwitch.classList.toggle('on', on);
+      notifyPromptSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
+      notifyPromptSwitch.style.opacity = currentNotifyMode() === 'off' ? '0.45' : '1';
+    }
+
+    /** 余额眼睛按钮 / 设置开关共用同一入口，避免两处状态分叉 */
+    function syncHideBalanceControls() {
+      syncBalancePrivacyUI();
+    }
+
+    function toggleHideBalance() {
+      var nextHidden = !isBalanceHidden();
+      tokenStore.preferences = Object.assign({}, tokenStore.preferences || {}, { hideBalance: nextHidden });
+      balanceRendered = false;
+      updateUI();
+      notifyListeners();
+      savePreferences({ hideBalance: nextHidden });
+      showTip(nextHidden ? '余额已隐藏' : '余额已显示');
     }
 
     if (notifySwitch) {
@@ -1942,6 +2342,41 @@
         savePreferences({ notifyMode: next });
         syncNotifySwitch();
         showTip(turningOn ? '任务完成后会提醒' : '已关闭完成提醒');
+      });
+    }
+
+    if (notifySubagentSwitch) {
+      notifySubagentSwitch.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var turningOn = !currentSubagentNotify();
+        // 存储语义是「静音」：开关打开 = notifySubagentMute=false
+        savePreferences({ notifySubagentMute: !turningOn });
+        syncNotifySubagentSwitch();
+        showTip(turningOn ? '子 Agent 完成时也会提醒' : '子 Agent 完成时不再提醒');
+      });
+    }
+
+    if (notifyPromptSwitch) {
+      notifyPromptSwitch.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var turningOn = !currentPromptNotify();
+        savePreferences({ notifyOnUserPrompt: turningOn });
+        syncNotifyPromptSwitch();
+        showTip(turningOn ? '出现等待选择的弹窗时会提醒' : '等待选择时不再提醒');
+      });
+    }
+
+    if (balanceEyeBtn) {
+      balanceEyeBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleHideBalance();
+      });
+    }
+
+    if (hideBalanceSwitch) {
+      hideBalanceSwitch.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleHideBalance();
       });
     }
 
@@ -2004,7 +2439,7 @@
             lines.push('上次续期 ' + new Date(cred.lastRefreshedAt).toLocaleTimeString());
           }
         } else {
-          lines.push('未保存 refresh token，token 过期后需要重新登录 sub.anzhiyu.com 并点「从浏览器同步」。');
+          lines.push('未保存 refresh token，token 过期后需要重新登录 ' + siteHostOf(siteIdOfAccount(activeAcc || { site: tokenStore.site })) + ' 并点「从浏览器同步」。');
         }
         credHint.textContent = lines.join(' ');
         credHint.style.color = auto ? 'var(--yuyu-muted-text)' : '#b91c1c';
@@ -2100,7 +2535,7 @@
 
         // 应用内弹出测试气泡
         if (tokenStore.widgetStyle === 'whale') {
-          showWhaleBubble('测试通知 · 本轮消耗', '-$0.0123', 'Tokens: 12,345 · 余额: $' + tokenStore.balance.toFixed(2));
+          showWhaleBubble('测试通知 · 本轮消耗', '-$0.0123', 'Tokens: 12,345 · 余额: ' + moneyText(tokenStore.balance, 2));
         } else {
           showPillBubble({
             sessionTitle: '测试通知 · 鱼鱼配额插件',
@@ -2420,8 +2855,8 @@
       topupBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         showTip('正在前往充值页面…');
-        requestBackend('/open-topup', { method: 'POST' }).catch(function() {
-          window.open('https://sub.anzhiyu.com/recharge-center', '_blank');
+        requestBackend('/open-topup', { method: 'POST', body: JSON.stringify({ site: tokenStore.site }) }).catch(function() {
+          window.open(rechargeUrlForSite(tokenStore.site), '_blank');
         });
       });
     }
@@ -2539,10 +2974,18 @@
         if (err) {
           showTip('刷新失败，当前显示 ' + formatSyncTime() + ' 的数据', true);
         } else {
-          showTip('已刷新 ' + data.email + ' ($' + data.balance.toFixed(2) + ')');
+          showTip('已刷新 ' + data.email + ' (' + moneyText(data.balance, 2) + ')');
         }
       }, { syncBrowser: false });
     });
+
+    // 对话 API 一键切换：直接走 DSH 自带模型选择，不在插件里维护第二套供应商配置
+    if (apiSwitchBtn) {
+      apiSwitchBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        switchDshApi();
+      });
+    }
 
     // 同步按钮
     syncBtn.addEventListener('click', function() {
@@ -2554,7 +2997,7 @@
         if (err) {
           showTip('后端不可达，当前显示 ' + formatSyncTime() + ' 的数据', true);
         } else {
-          showTip(msg || ('已同步账号: ' + data.email + ' ($' + data.balance.toFixed(2) + ')'));
+          showTip(msg || ('已同步账号: ' + data.email + ' (' + moneyText(data.balance, 2) + ')'));
         }
       }, { action: 'sync', forceCapture: false });
     });
@@ -2615,6 +3058,23 @@
       return react.createElement('div', { id: 'yuyu-quota-mount-point' });
     }
 
+    /**
+     * 会话头部的隐形探针：把当前对话的 sessionId 记到 window 上。
+     * 切换对话时 DSH 会重挂这个 session 级插槽，因此不会拿到上一个会话的 id。
+     */
+    function YuyuSessionProbe(props) {
+      if (!react) return null;
+      var sessionId = String(props && props.dshSessionId || '');
+      react.useEffect(function() {
+        if (!sessionId) return undefined;
+        window.__yuyuCurrentSessionId = sessionId;
+        return function() {
+          if (window.__yuyuCurrentSessionId === sessionId) delete window.__yuyuCurrentSessionId;
+        };
+      }, [sessionId]);
+      return null;
+    }
+
     function YuyuSettingsSection() {
       if (!react) return null;
       var storeState = react.useState(Object.assign({}, tokenStore));
@@ -2656,7 +3116,7 @@
       function handleSyncBrowser() {
         setStatusMsg('正在从本地浏览器存储读取最新登录账号...');
         fetchRemoteBalance(function(data, _err, msg) {
-          setStatusMsg(msg || ('已同步: ' + data.email + ' ($' + data.balance.toFixed(2) + ')'));
+          setStatusMsg(msg || ('已同步: ' + data.email + ' (' + moneyText(data.balance, 2) + ')'));
         }, { action: 'sync' });
       }
 
@@ -2672,8 +3132,8 @@
 
       function handleTopup() {
         setStatusMsg('正在打开鱼鱼 API 充值页面...');
-        requestBackend('/open-topup', { method: 'POST' }).catch(function() {
-          window.open('https://sub.anzhiyu.com/recharge-center', '_blank');
+        requestBackend('/open-topup', { method: 'POST', body: JSON.stringify({ site: tokenStore.site }) }).catch(function() {
+          window.open(rechargeUrlForSite(tokenStore.site), '_blank');
         });
       }
 
@@ -2752,7 +3212,7 @@
           react.createElement('span', {
             key: 'mail',
             style: { fontSize: '13px', fontWeight: 600, color: P.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
-          }, activeEmail || '未登录'),
+          }, bareEmail(activeEmail) || '未登录'),
           react.createElement('span', {
             key: 'st',
             style: { display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: P.muted, whiteSpace: 'nowrap' }
@@ -2785,7 +3245,12 @@
               fontSize: '46px', lineHeight: 1.02, fontWeight: 640,
               letterSpacing: '-2.2px', marginTop: '4px', color: P.ink
             }
-          }, [
+          }, isBalanceHidden() ? [
+            react.createElement('span', {
+              key: 'mask',
+              style: { fontSize: '26px', fontWeight: 640, letterSpacing: '0.12em', color: P.ink2 }
+            }, '••••')
+          ] : [
             react.createElement('span', {
               key: 'cur',
               style: { fontSize: '22px', fontWeight: 560, letterSpacing: '-0.3px', color: P.ink2, marginRight: '2px' }
@@ -2799,7 +3264,7 @@
           react.createElement('div', {
             key: 'sub',
             style: { fontSize: '12px', color: P.muted, marginTop: '7px' }
-          }, '累计充值 $' + Number(snap.totalRecharged || 0).toFixed(2))
+          }, '累计充值 ' + moneyText(Number(snap.totalRecharged || 0), 2))
         ]),
 
         // ---- 今日：三列纯文本，不套卡片 ----
@@ -2848,18 +3313,19 @@
             style: { fontSize: '12.5px', color: P.faint, padding: '10px 0' }
           }, '还没有账号，点上方「从浏览器同步」读取本地登录状态。') : null,
           accounts.map(function (acc, idx) {
-            var isActive = acc.email === activeEmail;
+            var accKey = accountKeyOf(acc);
+            var isActive = accKey === activeEmail;
             var bal = typeof acc.balance === 'number' ? acc.balance : (acc.snapshot ? acc.snapshot.balance : 0);
             return react.createElement('button', {
               key: 'acc-' + idx,
               type: 'button',
-              title: isActive ? acc.email + '（当前）' : '切换到 ' + acc.email,
+              title: isActive ? acc.email + '（当前 · ' + siteBadgeLabel(acc) + '）' : '切换到 ' + acc.email + '（' + siteBadgeLabel(acc) + '）',
               onClick: function () {
                 if (isActive) return;
                 setStatusMsg('正在切换到 ' + acc.email + '...');
                 fetchRemoteBalance(function (d, _e, msg) {
                   setStatusMsg(msg || ('已切换至 ' + d.email));
-                }, { action: 'switch', email: acc.email });
+                }, { action: 'switch', email: acc.email, key: accKey, site: siteIdOfAccount(acc) });
               },
               style: {
                 display: 'flex',
@@ -2897,6 +3363,20 @@
                   textOverflow: 'ellipsis'
                 }
               }, acc.email),
+              // 站点徽标：sub / www 是两个独立钱包，用户切号时必须能看出区别
+              react.createElement('span', {
+                key: 'site',
+                title: '站点 ' + siteBadgeLabel(acc),
+                style: {
+                  fontSize: '10px',
+                  lineHeight: '14px',
+                  padding: '0 5px',
+                  borderRadius: '4px',
+                  border: '1px solid ' + P.hair,
+                  color: P.muted,
+                  flexShrink: 0
+                }
+              }, siteBadgeLabel(acc)),
               react.createElement('span', { key: 'sp', style: { flex: 1 } }),
               react.createElement('span', {
                 key: 'bal',
@@ -2906,7 +3386,7 @@
                   color: isActive ? P.ink : P.muted,
                   whiteSpace: 'nowrap'
                 }
-              }, '$' + Number(bal || 0).toFixed(2))
+              }, moneyText(bal, 2))
             ]);
           })
         ]),
@@ -2947,6 +3427,7 @@
     }
 
     function apply(ctx) {
+      dshClientCtx = ctx || null;
       if (typeof document !== 'undefined') {
         if (document.readyState === 'loading') {
           document.addEventListener('DOMContentLoaded', ensureMounted);
@@ -2958,6 +3439,18 @@
       var slots = ctx.get ? ctx.get('slots') : ctx.slots;
       if (slots) {
         try {
+          // 隐形探针：只记录当前 sessionId，不占任何可见位置
+          slots.inject('conversation.session.header.utilities', function() {
+            return slots.register({
+              name: 'conversation.session.header.utilities',
+              id: 'yuyu-current-session',
+              order: 90,
+              inject: function(sessionId) {
+                return { dshSessionId: sessionId };
+              }
+            }, YuyuSessionProbe);
+          });
+
           slots.inject('shell.overlay', function() {
             return slots.register({
               name: 'shell.overlay',
@@ -2992,10 +3485,18 @@
 
     var mod = { exports: {} };
     mod.exports.apply = apply;
-    mod.exports.inject = ['slots'];
+    mod.exports.inject = ['slots', 'remote', 'remote.session'];
     mod.exports.name = PLUGIN_ID;
     // 仅供测试 harness 渲染 React 设置页；生产环境不读取
     mod.exports.__settingsSection = YuyuSettingsSection;
+    // 仅供自动化测试：不改变正常插件行为
+    mod.exports.__dshApiTest = {
+      providerGroupForSite: providerGroupForSite,
+      pickDshReasoningEffort: pickDshReasoningEffort,
+      setContext: function(ctx) { dshClientCtx = ctx || null; },
+      setSite: function(site) { tokenStore.site = site; },
+      switchToCurrentSite: switchDshApi
+    };
     return mod.exports;
   }
 
@@ -3006,7 +3507,7 @@
     });
   }
 
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && !(window.__ModuleLoader__ && window.__ModuleLoader__.load)) {
     try {
       var selfMod = factory(function(name) {
         if (name === 'react') return window.React;
