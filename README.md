@@ -52,7 +52,7 @@
 ### 方式二：手动加载
 
 ```bash
-dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.4.0.tgz"
+dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.4.1.tgz"
 ```
 
 ### 首次同步凭据
@@ -104,6 +104,7 @@ npm run test:smoke          # 后端逻辑
 npm run test:credentials    # 凭据续期（不联网）
 npm run test:browser        # 浏览器扫描（合成 LevelDB / Firefox storage）
 npm run test:currency       # 币种偏好、汇率缓存与双站点快照
+npm run test:update         # 更新检查超时、Cloudflare 兜底与发布说明解析
 npm run test:ui             # 前端 DOM 行为（jsdom）
 npm run test:cf             # Cloudflare 函数
 npm run pack                # 打包 tgz 并打印 sha256

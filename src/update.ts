@@ -10,7 +10,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const FETCH_TIMEOUT_MS = 8000;
-const FAST_FEED_TIMEOUT_MS = 1500;
+// Cloudflare 在国内网络下冷启动/首包偶尔会超过 1.5s；1.5s 会把可用的更新源误判成失败。
+// 用户主动点「检查更新」时可以等 6s，宁可慢一点，也不要让唯一的可用通道先熔断。
+const FAST_FEED_TIMEOUT_MS = 6000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const DEFAULT_GITHUB_REPO = 'Misakii1k/dsh-plugin-yuyu-quota';
 
@@ -119,6 +121,15 @@ async function fetchJson(url: string, currentVersion: string, timeoutMs = FETCH_
 
 const SHA256_RE = /^[a-f0-9]{64}$/i;
 
+/** 把底层 fetch 错误转成用户能看懂的短句，避免 UI 只显示 `This operation was aborted`。 */
+function summarizeFetchError(err: any): string {
+  const message = String(err?.message || err || '');
+  if (err?.name === 'AbortError' || /aborted/i.test(message)) return '请求超时';
+  if (/HTTP 403/i.test(message)) return '请求被 GitHub 拒绝（403，仓库私有或触发限流）';
+  if (/HTTP 404/i.test(message)) return '未找到发布清单（404）';
+  return message;
+}
+
 function pickReleaseAsset(assets: any): string {
   if (!Array.isArray(assets)) return '';
   const preferred = assets.find((asset) => /\.tgz$/i.test(String(asset?.name || '')))
@@ -173,7 +184,7 @@ function normalizeRelease(data: any, currentVersion: string, repo: string, sourc
   const assetUrl = pickReleaseAsset(data.assets);
   const rawDownload = data.downloadUrl || assetUrl || data.tarball || data.tarball_url || '';
   const downloadUrl = resolveDownloadUrl(rawDownload, feedUrl) || String(rawDownload || '');
-  const notes = String(data.notes || data.body || data.changelog || '').slice(0, 1500);
+  const notes = String(data.notes || data.releaseNotes || data.body || data.changelog || '').slice(0, 1500);
   const publishedAt = data.publishedAt || data.published_at || data.created_at || '';
 
   const assetFacts = tgzAssetFacts(data.assets);
@@ -240,6 +251,10 @@ export async function checkForUpdate(options: UpdateCheckOptions): Promise<Updat
 
   if (feedUrl) {
     sources.push({ url: `${feedUrl}/version.json`, source: 'feed', timeout: FAST_FEED_TIMEOUT_MS });
+    // version.json 是轻量清单；如果它超时/被冷启动拖住，用同一个 Cloudflare
+    // 代理的 /api/releases 再兜一次。仓库是私有的，直连 api.github.com 匿名
+    // 只会拿到 403，这条二级通道比 GitHub 直连更可靠。
+    sources.push({ url: `${feedUrl}/api/releases`, source: 'feed-releases', timeout: FETCH_TIMEOUT_MS });
   }
   sources.push({ url: `https://api.github.com/repos/${repo}/releases/latest`, source: 'github-release' });
   sources.push({
@@ -271,7 +286,7 @@ export async function checkForUpdate(options: UpdateCheckOptions): Promise<Updat
         }
       }
     } catch (err: any) {
-      errors.push(`feed: ${err?.message || String(err)}`);
+      errors.push(`feed: ${summarizeFetchError(err)}`);
     }
   }
 
@@ -291,7 +306,7 @@ export async function checkForUpdate(options: UpdateCheckOptions): Promise<Updat
     if (result.status === 'fulfilled') {
       candidates.push(result.value);
     } else {
-      errors.push(`${rest[index].source}: ${result.reason?.message || String(result.reason)}`);
+      errors.push(`${rest[index].source}: ${summarizeFetchError(result.reason)}`);
     }
   }
 
