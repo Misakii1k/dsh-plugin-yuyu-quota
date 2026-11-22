@@ -22,6 +22,7 @@
 | JWT 约 24 小时过期，重登很烦 | 到期前 5 分钟自动续期，401 兜底再试一次 |
 | 多个账号来回切换查 | 多账号并存，卡片里直接切；旧站 / 新站用「旧 / 新」徽标区分 |
 | 忘了余额，一轮对话烧完才发现 | 低于阈值亮矢量警示图标；每轮结束弹通知报用量 |
+| 新站余额是美元，换算人民币要自己算 | 按 `/api/v1/currency/rates` 的 USD→CNY 汇率折算；卡片内可切 USD / CNY，旧站自动回退美元 |
 | 换站还要去 DSH 模型菜单手动挑供应商 | 卡片底部「API」按钮，按当前账号站点一键对齐当前对话 |
 
 ---
@@ -36,7 +37,7 @@
 ```
 
 - **挂件**：小鲸鱼立绘或极简胶囊，可拖到任意位置，松手自动吸附最近边缘，位置跨刷新记住。
-- **详情卡**：账号邮箱、今日消耗、今日 Token、已绑定密钥、上次同步时间，底部带凭据状态条与「立即续期」。
+- **详情卡**：账号邮箱、今日消耗、今日 Token、已绑定密钥、上次同步时间，底部带凭据状态条与「立即续期」；新站可按汇率接口显示人民币折合额，点卡片里的 USD / CNY 滑块即可来回切。
 - **API 对齐**：详情卡底部「API」按钮，直接读取 DSH 自带模型目录，把当前对话切到当前账号站点对应的供应商；旧站 `fish`、新站 `yuyu`，不写 Key，也不需要第二套配置。
 - **对话工具**：注册 `get_yuyu_api_balance`，在对话里问「我还有多少余额」，模型自主调用并用中文汇报。
 
@@ -51,14 +52,14 @@
 ### 方式二：手动加载
 
 ```bash
-dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.3.3.tgz"
+dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.4.0.tgz"
 ```
 
 ### 首次同步凭据
 
 插件需要鱼鱼 API 网页端的登录态。两种方式任选：
 
-1. **Windows 双击** `一键配置.bat` —— 自动扫描正在运行的 Chrome / Edge / Brave，从已登录标签页取出 `auth_token`，校验余额后写入配置。
+1. **Windows 双击** `一键配置.bat` —— 自动扫描本机 Chromium / Firefox 系浏览器的登录态，从已登录的鱼鱼页面取出 Token，校验余额后写入配置。Chromium 系覆盖 Chrome、Edge（含 Beta / Dev / Canary / WebView2）、Brave、Vivaldi、Opera、Arc、Yandex、360、QQ、搜狗、Maxthon；Firefox 系覆盖 Firefox、Waterfox、LibreWolf、Zen。
 2. **在 DSH 界面点击**「一键从浏览器同步登录凭据」—— 后台同样完成探测、抓取、保存与刷新。
 
 > 两者都不需要你开 F12 手动复制那串 300 多位的 Token。
@@ -81,6 +82,7 @@ dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.3.3.tgz"
 | `notifySubagentMute` | boolean | `true` | 子智能体完成时不打扰（用量照常记账） |
 | `reportOnComplete` | boolean | `true` | 每轮结束在浮窗汇报本轮 Token 与实扣额度 |
 | `hideBalance` | boolean | `false` | 隐藏余额（卡片眼睛按钮 / 设置开关同步，成本与用量不受影响） |
+| `displayCurrency` | enum | `auto` | `auto` / `USD` / `CNY`；`auto` 在新站且汇率可用时显示人民币，旧站回退美元 |
 | `theme` | enum | `system` | `system` / `light` / `dark` |
 | `widgetStyle` | enum | `whale` | `whale` 小鲸鱼立绘 / `pill` 极简胶囊 |
 | `whaleModel` | enum | `DSniang1` | 立绘形象：`DSniang1` / `DSniang02` / `DSH2` |
@@ -100,7 +102,8 @@ npm run typecheck           # tsc --noEmit
 npm test                    # build + 后端 / 凭据 / 浏览器 / API 切换 / UI / 性能 / Cloudflare 全套自检
 npm run test:smoke          # 后端逻辑
 npm run test:credentials    # 凭据续期（不联网）
-npm run test:browser        # 浏览器扫描（合成 LevelDB）
+npm run test:browser        # 浏览器扫描（合成 LevelDB / Firefox storage）
+npm run test:currency       # 币种偏好、汇率缓存与双站点快照
 npm run test:ui             # 前端 DOM 行为（jsdom）
 npm run test:cf             # Cloudflare 函数
 npm run pack                # 打包 tgz 并打印 sha256
@@ -117,6 +120,8 @@ npm run pack                # 打包 tgz 并打印 sha256
 ### 余额字段的真相
 
 - 权威字段是 `/api/v1/user/profile` 的 `balance`，单位 **USD**，不是人民币。
+- 新站另有 `/api/v1/currency/rates`，返回 `base: "USD"`、`quote: "CNY"` 与 `rate`；人民币是**展示折算**，钱包仍以美元记账，插件不会写回或改动余额。旧站没有这个接口，人民币入口会禁用并回退美元。
+- `status: "stale"` 时汇率仍可展示，但卡片状态行会标成琥珀色并提示汇率过期；没有汇率就不要猜一个数字替代。
 - 服务端的 `updated_at` / `last_active_at` 每次请求都会刷新，**不能**用来判断余额是否新鲜。
 - 充值到账后 `total_recharged` 同步增加，插件据此记录 `balanceChangedAt`。
 
@@ -136,11 +141,11 @@ npm run pack                # 打包 tgz 并打印 sha256
 2. 续期成功后**立即原子写盘**，绝不降级为直接覆盖（写到一半崩溃就永久丢凭据）；
 3. refresh token 与账号的**配对不能靠猜**——旧实现把第一个 `rt_` 塞给所有账号，结果用 A 的凭据换出 token 写进 B。现在按「同 profile + 同文件偏移最近」配对，配不上就留空，让用户点一次「从浏览器同步」。
 
-### 读不到 Edge 的数据
+### 读不到浏览器数据
 
 旧实现有三处会让 Edge 整段失效：只认 `LOCALAPPDATA/Microsoft/Edge` 一个固定路径（环境变量缺失就直接跳过）；只认 `Microsoft/Edge`，不认 `Edge Beta` / `Dev` / `SxS`；profile 只认 `Default` 与 `Profile N`，而 Edge WebView2 的数据在 `EdgeWebView/User Data/EBWebView/Default/...`，多一层嵌套就扫不到。
 
-现在枚举全部 Chromium 内核浏览器与全部 profile 变体，并递归下钻 `EBWebView`。扫描失败时返回诊断（`profiles` / `files` / `unreadable`），能直接看出是「没装浏览器」「文件被占用」还是「确实没登录」。
+现在枚举全部 Chromium 内核浏览器与全部 profile 变体，并递归下钻 `EBWebView`。Firefox 系不依赖 `profiles.ini`，直接扫 `Profiles/*/storage/default|permanent/<origin>/ls/data.sqlite`，用 origin 目录名（`https+++www.anzhiyu.com`）判定站点，避免把旧站登录态错认成新站。扫描失败时返回诊断（`profiles` / `files` / `unreadable`），能直接看出是「没装浏览器」「文件被占用」还是「确实没登录」。
 
 ### 卡片点不开（已修复，勿回退）
 

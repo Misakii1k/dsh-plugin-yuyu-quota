@@ -1,4 +1,4 @@
-import { UserProfile, UsageStats, ApiKeyItem, BalanceSnapshot } from './types.js';
+import { UserProfile, UsageStats, ApiKeyItem, BalanceSnapshot, CurrencyRate } from './types.js';
 import { DEFAULT_SITE, siteBaseUrl, siteInfo, normalizeSiteId, YuyuSiteId } from './sites.js';
 
 const DEFAULT_BASE_URL = siteBaseUrl(DEFAULT_SITE);
@@ -34,6 +34,23 @@ export class YuyuApiError extends Error {
 }
 
 /**
+ * 把接口里的时间字段统一成毫秒时间戳。
+ * 兼容 ISO 字符串、秒级数字和毫秒级数字；无法解析时返回 undefined。
+ */
+function parseTimeMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric < 1e12 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+/**
  * 鱼鱼 API 客户端封装
  */
 export class YuyuApiClient {
@@ -41,6 +58,11 @@ export class YuyuApiClient {
   private token: string;
   /** 账号所属站点（仅用于展示；请求地址仍以 baseUrl 为准） */
   private site: YuyuSiteId;
+  /**
+   * 汇率请求缓存。余额默认 30 秒刷新一次，汇率报价通常变化更慢；
+   * 缓存 60 秒既能跟上报价，又不会给公开端点增加一倍请求量。
+   */
+  private currencyRateCache: { value: CurrencyRate | null; checkedAt: number } | null = null;
 
   constructor(token: string, baseUrl: string = DEFAULT_BASE_URL, site?: YuyuSiteId) {
     this.token = token.trim();
@@ -125,14 +147,63 @@ export class YuyuApiClient {
   }
 
   /**
+   * 获取新站的人民币展示汇率（1 USD = N CNY）。
+   *
+   * 旧站没有这个端点（实测 404）；非新站直接返回 null，不发出请求。
+   * 汇率只是展示口径，请求失败绝不能连累余额快照。
+   */
+  public async getCurrencyRate(force = false): Promise<CurrencyRate | null> {
+    if (this.site !== 'www') return null;
+
+    const cached = this.currencyRateCache;
+    if (!force && cached) {
+      const ttl = cached.value ? 60_000 : 30_000;
+      if (Date.now() - cached.checkedAt < ttl) return cached.value;
+    }
+
+    try {
+      const data = await this.request<any>('/currency/rates');
+      const rate = Number(data?.rate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new YuyuApiError('汇率接口返回了无效的 rate', 200, undefined, 'INVALID_RATE');
+      }
+      const base = String(data?.base || '').toUpperCase();
+      const quote = String(data?.quote || '').toUpperCase();
+      if (base !== 'USD' || quote !== 'CNY') {
+        throw new YuyuApiError(`汇率接口币种不符: ${base || '?'}→${quote || '?'}`, 200, undefined, 'UNSUPPORTED_RATE');
+      }
+
+      const value: CurrencyRate = {
+        base: 'USD',
+        quote: 'CNY',
+        rate,
+        quoteId: data?.quote_id === undefined ? undefined : String(data.quote_id),
+        source: typeof data?.source === 'string' ? data.source : undefined,
+        rateKind: typeof data?.rate_kind === 'string' ? data.rate_kind : undefined,
+        fetchedAt: parseTimeMs(data?.fetched_at),
+        refreshAfterMs: parseTimeMs(data?.refresh_after),
+        validUntil: parseTimeMs(data?.valid_until),
+        status: String(data?.status || '').toLowerCase() === 'stale' ? 'stale' : 'fresh'
+      };
+      this.currencyRateCache = { value, checkedAt: Date.now() };
+      return value;
+    } catch {
+      // 缓存失败结果，避免每 30 秒对同一个故障端点重试；下一次余额刷新仍会重试
+      this.currencyRateCache = { value: null, checkedAt: Date.now() };
+      return null;
+    }
+  }
+
+  /**
    * 获取完整余额与用量快照（用于状态栏和 Agent Tool）
    */
   public async getBalanceSnapshot(alertThreshold = 2.0): Promise<BalanceSnapshot> {
     try {
-      const [profile, stats, keysRes] = await Promise.allSettled([
+      const [profile, stats, keysRes, rateRes] = await Promise.allSettled([
         this.getProfile(),
         this.getUsageStats(),
-        this.getKeys()
+        this.getKeys(),
+        this.getCurrencyRate()
       ]);
 
       const fetchedAt = Date.now();
@@ -144,6 +215,8 @@ export class YuyuApiClient {
       const p = profile.value;
       const s = stats.status === 'fulfilled' ? stats.value : null;
       const k = keysRes.status === 'fulfilled' ? keysRes.value : null;
+      const exchangeRate = rateRes.status === 'fulfilled' ? rateRes.value : null;
+      const currencyError = this.site === 'www' && !exchangeRate ? '人民币汇率暂时不可用，已按美元展示' : undefined;
 
       const balance = Number(p.balance || 0);
       const isLowBalance = balance <= alertThreshold;
@@ -185,6 +258,13 @@ export class YuyuApiClient {
         lines.push(`- 关联密钥 (${keysSummary.length}个):`);
         lines.push(...keysSummary);
       }
+      if (exchangeRate) {
+        const cnyBalance = balance * exchangeRate.rate;
+        const rateNote = exchangeRate.status === 'stale' ? '汇率略旧' : '实时汇率';
+        lines.push(`- 人民币参考(展示口径): ¥${cnyBalance.toFixed(2)}（1 USD = ${exchangeRate.rate.toFixed(4)} CNY，${rateNote}）`);
+      } else if (currencyError) {
+        lines.push(`- 人民币参考: ${currencyError}`);
+      }
 
       return {
         success: true,
@@ -206,6 +286,8 @@ export class YuyuApiClient {
         keysSummary,
         isLowBalance,
         alertThreshold,
+        exchangeRate,
+        currencyError,
         formattedText: lines.join('\n')
       };
     } catch (err: any) {
@@ -227,6 +309,7 @@ export class YuyuApiClient {
         keysSummary: [],
         isLowBalance: true,
         alertThreshold,
+        exchangeRate: null,
         formattedText: `[错误] 查询鱼鱼API余额失败: ${err?.message || err}`,
         error: err?.message || String(err),
         // 结构化标记：上层据此决定是否走 refresh 续期，而不是猜错误文本

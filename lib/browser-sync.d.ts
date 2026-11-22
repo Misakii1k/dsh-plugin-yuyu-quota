@@ -79,6 +79,8 @@ export interface RawScanState extends RawScanHit {
  *
  * 与旧实现的差别：
  * - 覆盖 Edge Beta/Dev/Canary/WebView2、Chrome 多通道、Brave、Vivaldi、Opera；
+ * - 追加 Chromium、Arc、Yandex、360 极速/安全、QQ、搜狗、Maxthon；
+ * - Firefox 系走 `storage/default/<origin>/ls/data.sqlite`，按 origin 目录判定站点；
  * - 目录探测递归到 `EBWebView`；
  * - 同时提取 `rt_` refresh token，并记录它在哪个 profile / 文件 / 偏移，
  *   供后续与 access token 做「就近配对」；

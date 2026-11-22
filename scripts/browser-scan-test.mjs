@@ -71,6 +71,16 @@ function writeLevelDb(dir, fileName, payloads) {
   fs.writeFileSync(path.join(dir, fileName), Buffer.concat(chunks));
 }
 
+/** Firefox 的 localStorage 存在 storage/<default|permanent>/<origin>/ls/data.sqlite */
+function writeFirefoxData(profileDir, origin, { token, refreshToken }) {
+  const dir = path.join(profileDir, 'storage', 'default', origin, 'ls');
+  fs.mkdirSync(dir, { recursive: true });
+  const parts = [];
+  if (token) parts.push(Buffer.from(token));
+  if (refreshToken) parts.push(Buffer.from(refreshToken));
+  fs.writeFileSync(path.join(dir, 'data.sqlite'), Buffer.concat(parts));
+}
+
 /**
  * 因为 browser-sync 的候选路径依赖环境变量，测试里通过改写
  * LOCALAPPDATA / APPDATA 再动态 import 来隔离。
@@ -147,6 +157,66 @@ await test('Edge WebView2 的 EBWebView 嵌套布局被识别', async () => {
       const { all } = mod.scanLocalLevelDBTokens();
       assert.equal(all.length, 1, 'WebView2 里的 token 也要能读到');
       assert.equal(all[0].email, 'wv@example.com');
+    }
+  );
+});
+
+await test('Yandex / 360 / Opera / QQ 等 Chromium 发行版路径被识别', async () => {
+  const yandex = fakeAccessToken({ email: 'yandex@example.com', iat: now, exp: now + 24 * HOUR });
+  const q360 = fakeAccessToken({ email: '360@example.com', iat: now, exp: now + 24 * HOUR });
+  const opera = fakeAccessToken({ email: 'opera@example.com', iat: now, exp: now + 24 * HOUR });
+  const qq = fakeAccessToken({ email: 'qq@example.com', iat: now, exp: now + 24 * HOUR });
+  await withFakeBrowsers(
+    ({ local, roaming }) => {
+      writeLevelDb(path.join(local, 'Yandex/YandexBrowser/User Data/Default/Local Storage/leveldb'), '000001.log', [{ key: 'auth_token', value: yandex }]);
+      writeLevelDb(path.join(local, '360ChromeX/Chrome/User Data/Default/Local Storage/leveldb'), '000001.log', [{ key: 'auth_token', value: q360 }]);
+      writeLevelDb(path.join(roaming, 'Opera Software/Opera Stable/Default/Local Storage/leveldb'), '000001.log', [{ key: 'auth_token', value: opera }]);
+      writeLevelDb(path.join(roaming, 'Tencent/QQBrowser/User Data/Default/Local Storage/leveldb'), '000001.log', [{ key: 'auth_token', value: qq }]);
+    },
+    async (mod) => {
+      const { all } = mod.scanLocalLevelDBTokens();
+      assert.deepEqual(
+        all.map((a) => `${a.browser}:${a.email}`).sort(),
+        ['360 极速浏览器:360@example.com', 'Opera:opera@example.com', 'QQ 浏览器:qq@example.com', 'Yandex Browser:yandex@example.com']
+      );
+    }
+  );
+});
+
+await test('Firefox 的 storage/default/<origin>/ls/data.sqlite 被识别', async () => {
+  const token = fakeAccessToken({ email: 'firefox@example.com', iat: now, exp: now + 24 * HOUR });
+  const rt = `rt_${'a'.repeat(64)}`;
+  await withFakeBrowsers(
+    ({ roaming }) => {
+      const profile = path.join(roaming, 'Mozilla/Firefox/Profiles/test.default-release');
+      writeFirefoxData(profile, 'https+++www.anzhiyu.com', { token, refreshToken: rt });
+    },
+    async (mod) => {
+      const { latest, all, diagnostics } = mod.scanLocalLevelDBTokens();
+      assert.ok(latest, '应当扫到 Firefox 的 token');
+      assert.equal(latest.email, 'firefox@example.com');
+      assert.equal(latest.site, 'www');
+      assert.equal(latest.browser, 'Mozilla Firefox');
+      assert.equal(all.length, 1);
+      assert.equal(all[0].refreshToken, rt, 'Firefox 的 refresh token 也要挂到同一账号');
+      assert.ok(diagnostics.roots.some((r) => r.startsWith('Mozilla Firefox:')));
+    }
+  );
+});
+
+await test('Firefox origin 目录决定站点，不会把旧站错认成新站', async () => {
+  const subToken = fakeAccessToken({ email: 'ff-sub@example.com', iat: now, exp: now + 24 * HOUR });
+  const wwwToken = fakeAccessToken({ email: 'ff-www@example.com', iat: now + 1, exp: now + 24 * HOUR });
+  await withFakeBrowsers(
+    ({ roaming }) => {
+      const profile = path.join(roaming, 'Mozilla/Firefox/Profiles/dual.default');
+      writeFirefoxData(profile, 'https+++sub.anzhiyu.com', { token: subToken });
+      writeFirefoxData(profile, 'https+++www.anzhiyu.com', { token: wwwToken });
+    },
+    async (mod) => {
+      const { all } = mod.scanLocalLevelDBTokens();
+      assert.equal(all.length, 2);
+      assert.deepEqual(all.map((a) => `${a.site}:${a.email}`).sort(), ['sub:ff-sub@example.com', 'www:ff-www@example.com']);
     }
   );
 });

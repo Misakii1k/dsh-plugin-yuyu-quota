@@ -8,6 +8,7 @@ import { YuyuApiClient } from './api.js';
 import { createYuyuBalanceTool, buildYuyuBalanceToolDescription } from './tool.js';
 import { scanRunningBrowsersForToken, launchAndCaptureToken, openExternal } from './browser-sync.js';
 import { PluginConfig, BalanceSnapshot, RefreshInterval, PluginPreferences, TurnUsageReport, UpdateInfo, WidgetPosition, CredentialHealth } from './types.js';
+import { formatDisplayAmount, isDisplayCurrency, resolveDisplayCurrency } from './currency.js';
 import { createSessionTracker, UserPromptNotice } from './session-tracker.js';
 import { sendDesktopNotification, playSystemAlertSound, NotifySound } from './notify.js';
 import { checkForUpdate, downloadUpdate, installUpdate, getPluginVersion } from './update.js';
@@ -89,6 +90,7 @@ export function defaultPreferences(): PluginPreferences {
     notifyOnlyWhenUnfocused: false,
     reportOnComplete: true,
     hideBalance: false,
+    displayCurrency: 'auto',
     updateCheck: true,
     updateFeedUrl: 'https://dsh-plugin-yuyu-quota-update.pages.dev',
     githubRepo: 'Misakii1k/dsh-plugin-yuyu-quota',
@@ -159,6 +161,10 @@ export function sanitizePreferences(input: any, base: PluginPreferences): Plugin
 
   if (input.widgetStyle === 'whale' || input.widgetStyle === 'pill') {
     next.widgetStyle = input.widgetStyle;
+  }
+
+  if (isDisplayCurrency(input.displayCurrency)) {
+    next.displayCurrency = input.displayCurrency;
   }
 
   if (input.whaleModel === 'DSniang1' || input.whaleModel === 'DSniang02' || input.whaleModel === 'DSH2') {
@@ -1200,9 +1206,22 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
     if (report.reason !== 'completed' && !prefs.notifyOnFailure) return;
 
     const tokens = report.tokens.totalTokens;
+    // 通知里的金额跟随用户当前展示币种；旧站/无汇率自动回退 USD。
+    // 这里用最近的余额快照判断站点与汇率，避免把 USD 余额误标成人民币。
+    const displayCurrency = resolveDisplayCurrency(
+      prefs.displayCurrency,
+      cachedSnapshot?.site,
+      cachedSnapshot?.exchangeRate
+    );
+    const exchangeRate = cachedSnapshot?.exchangeRate || null;
+    const money = (amount: number, digits: number) => formatDisplayAmount(amount, {
+      currency: displayCurrency,
+      rate: exchangeRate,
+      digits
+    });
     const quotaText = report.quotaSource === 'unavailable'
       ? '额度待下次刷新同步'
-      : `${report.quotaSource === 'estimated' ? '约 ' : ''}$${report.quota.toFixed(4)}`;
+      : `${report.quotaSource === 'estimated' ? '约 ' : ''}${money(report.quota, 4)}`;
 
     const titlePrefix = report.reason === 'completed'
       ? '任务完成'
@@ -1213,10 +1232,10 @@ export function createYuyuService(initialConfig?: Partial<PluginConfig>, logger:
 
     const lines = [
       `本轮 ${tokens.toLocaleString('en-US')} Tokens · 实扣 ${quotaText}`,
-      `会话累计 ${report.sessionTokens.toLocaleString('en-US')} Tokens · $${report.sessionQuota.toFixed(4)}`
+      `会话累计 ${report.sessionTokens.toLocaleString('en-US')} Tokens · ${money(report.sessionQuota, 4)}`
     ];
     if (typeof report.balanceAfter === 'number') {
-      lines.push(prefs.hideBalance ? '当前余额 已隐藏' : `当前余额 $${report.balanceAfter.toFixed(2)}`);
+      lines.push(prefs.hideBalance ? '当前余额 已隐藏' : `当前余额 ${money(report.balanceAfter, 2)}`);
     }
 
     const customSoundPath = resolveSoundFilePath(prefs.soundEffect);

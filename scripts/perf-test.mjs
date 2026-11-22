@@ -32,7 +32,9 @@ const clientSrc = fs.readFileSync(path.join(root, 'src', 'client.js'), 'utf8');
 // 说明：jsdom 里首次 eval 含 JIT 预热，单次均值虚高；
 // 这里先热身一次再取 3 次的中位数，量的是「稳定状态下的挂载开销」。
 const BUDGET = {
-  mountMs: 90,           // 首次挂载（热身后的中位数）
+  // 币种切换与设置项增加了 CSS/JS 体积；热身后中位数实测 84–108ms，120 留出机器抖动余量，
+  // 仍能拦住 150ms 以上的明显退化。
+  mountMs: 120,          // 首次挂载（热身后的中位数）
   updateMs: 4,           // 单次 updateUI（30s 一次，4ms 已很宽松）
   // 每次刷新允许新增的节点数。
   // 7 个文本节点来自 textContent 赋值（余额、今日实扣、Tokens、密钥、

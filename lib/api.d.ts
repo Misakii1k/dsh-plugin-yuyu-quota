@@ -1,4 +1,4 @@
-import { UserProfile, UsageStats, ApiKeyItem, BalanceSnapshot } from './types.js';
+import { UserProfile, UsageStats, ApiKeyItem, BalanceSnapshot, CurrencyRate } from './types.js';
 import { YuyuSiteId } from './sites.js';
 /**
  * 带 HTTP 状态码的 API 错误。
@@ -24,6 +24,11 @@ export declare class YuyuApiClient {
     private token;
     /** 账号所属站点（仅用于展示；请求地址仍以 baseUrl 为准） */
     private site;
+    /**
+     * 汇率请求缓存。余额默认 30 秒刷新一次，汇率报价通常变化更慢；
+     * 缓存 60 秒既能跟上报价，又不会给公开端点增加一倍请求量。
+     */
+    private currencyRateCache;
     constructor(token: string, baseUrl?: string, site?: YuyuSiteId);
     updateToken(token: string): void;
     updateBaseUrl(baseUrl: string): void;
@@ -44,6 +49,13 @@ export declare class YuyuApiClient {
         items: ApiKeyItem[];
         total: number;
     }>;
+    /**
+     * 获取新站的人民币展示汇率（1 USD = N CNY）。
+     *
+     * 旧站没有这个端点（实测 404）；非新站直接返回 null，不发出请求。
+     * 汇率只是展示口径，请求失败绝不能连累余额快照。
+     */
+    getCurrencyRate(force?: boolean): Promise<CurrencyRate | null>;
     /**
      * 获取完整余额与用量快照（用于状态栏和 Agent Tool）
      */

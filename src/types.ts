@@ -56,6 +56,32 @@ export interface ApiKeyItem {
   };
 }
 
+/**
+ * 新站 `/currency/rates` 的展示汇率。
+ *
+ * 钱包余额本身仍是 USD；`rate` 只用于把余额折算成人民币展示。
+ * `status=stale` 时仍可展示，但界面要标明汇率略旧。
+ */
+export interface CurrencyRate {
+  base: 'USD';
+  quote: 'CNY';
+  rate: number;
+  /** 服务端报价 ID，便于排查汇率来源 */
+  quoteId?: string;
+  source?: string;
+  rateKind?: string;
+  /** 服务端报价时间（ms） */
+  fetchedAt?: number;
+  /** 建议下次刷新间隔（ms） */
+  refreshAfterMs?: number;
+  /** 报价有效截止时间（ms） */
+  validUntil?: number;
+  status: 'fresh' | 'stale';
+}
+
+/** 显示币种：自动跟随站点 / 固定美元 / 固定人民币 */
+export type DisplayCurrency = 'auto' | 'USD' | 'CNY';
+
 export interface BalanceSnapshot {
   success: boolean;
   timestamp: number;
@@ -79,6 +105,10 @@ export interface BalanceSnapshot {
   keysSummary: string[];     // Key 分组概要
   isLowBalance: boolean;     // 是否触发低额报警
   alertThreshold: number;    // 预警阈值
+  /** 新站实时 USD→CNY 展示汇率；旧站或汇率不可用时为 null（余额仍按 USD） */
+  exchangeRate?: CurrencyRate | null;
+  /** 汇率单独请求失败时的原因，不影响余额快照成功 */
+  currencyError?: string;
   formattedText: string;     // 中文自然语言友好摘要
   error?: string;
   /** 结构化标记：本次失败是否为凭据无效（可尝试 refresh 续期） */
@@ -218,6 +248,13 @@ export interface PluginPreferences {
   reportOnComplete: boolean;
   /** 隐藏界面与通知里的余额数字（隐私模式），成本/用量仍正常显示 */
   hideBalance: boolean;
+  /**
+   * 余额展示币种：
+   * - auto：新站有汇率时用人民币，旧站/无汇率用美元；
+   * - USD：始终按美元展示；
+   * - CNY：新站按实时汇率折算，旧站自动回退美元。
+   */
+  displayCurrency?: DisplayCurrency;
   /** 自动检查插件更新 */
   updateCheck: boolean;
   /** Cloudflare 边缘更新源根地址，如 https://xxx.pages.dev */

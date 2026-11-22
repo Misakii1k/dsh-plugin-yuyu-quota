@@ -49,7 +49,7 @@ async function boot(options = {}) {
     return { matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} };
   };
   if (!window.PointerEvent) window.PointerEvent = window.MouseEvent;
-  window.fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+  window.fetch = options.fetch || (async () => ({ ok: false, status: 503, json: async () => ({}) }));
   window.HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };
   window.HTMLMediaElement.prototype.pause = function () {};
   Object.defineProperty(window.HTMLElement.prototype, 'offsetWidth', { configurable: true, get() { return 140; } });
@@ -375,6 +375,123 @@ console.log('[ui-test] 13) 点 API 按钮不误关卡片，并给出可读提示
     check('点 API 后卡片仍打开', card.classList.contains('is-open'));
     const tip = container.querySelector('#yuyu-sync-tip');
     check('没有 session 时提示先打开对话', tip && tip.textContent.indexOf('先打开') !== -1, tip && tip.textContent);
+  }
+}
+
+console.log('[ui-test] 14) 新站币种切换、旧站禁用与隐私模式');
+{
+  const rate = { base: 'USD', quote: 'CNY', rate: 6.72, status: 'fresh', fetchedAt: Date.now() };
+  let prefs = {
+    theme: 'light', widgetStyle: 'whale', notifyMode: 'both', notifyOnComplete: true,
+    notifySubagentMute: true, notifyOnUserPrompt: false, hideBalance: false, displayCurrency: 'auto'
+  };
+  const payload = {
+    activeEmail: 'www:demo@example.com',
+    activeSite: 'www',
+    accounts: [
+      { email: 'www:demo@example.com', site: 'www', balance: 12.34, total_recharged: 48, active: true, snapshot: { email: 'demo@example.com', site: 'www', balance: 12.34, totalRecharged: 48, todayCost: 0.1234, todayTokens: 9000, exchangeRate: rate } }
+    ],
+    preferences: prefs,
+    version: '1.3.3',
+    snapshot: {
+      success: true, email: 'demo@example.com', site: 'www', balance: 12.34,
+      totalRecharged: 48, todayCost: 0.1234, todayTokens: 9000, todayRequests: 12,
+      keysCount: 2, exchangeRate: rate, timestamp: Date.now()
+    }
+  };
+  const fetch = async (url, options = {}) => {
+    if (String(url).includes('/settings')) {
+      if (options.method === 'POST') {
+        const body = JSON.parse(options.body || '{}');
+        if (body.preferences) prefs = body.preferences;
+        return { ok: true, status: 200, json: async () => ({ ok: true, preferences: prefs, version: '1.3.3' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ preferences: prefs, version: '1.3.3' }) };
+    }
+    return { ok: true, status: 200, json: async () => payload };
+  };
+
+  const { container } = await boot({ fetch });
+  await new Promise((r) => setTimeout(r, 400));
+  if (container) {
+    const win = container.ownerDocument.defaultView;
+    const card = container.querySelector('#yuyu-card-popup');
+    const cur = container.querySelector('#yuyu-card-cur');
+    const bal = container.querySelector('#yuyu-card-bal');
+    const switchEl = container.querySelector('#yuyu-cur-switch');
+    const fx = container.querySelector('#yuyu-card-fx');
+    const cnyBtn = switchEl.querySelector('[data-cur="CNY"]');
+    const usdBtn = switchEl.querySelector('[data-cur="USD"]');
+
+    check('新站 auto 默认显示人民币符号', cur.textContent === '¥', cur.textContent);
+    check('新站余额按汇率换算', /^82\.92$/.test(bal.textContent), bal.textContent);
+    check('人民币滑块处于激活态', switchEl.getAttribute('data-active') === 'CNY', switchEl.getAttribute('data-active'));
+    check('汇率行进入人民币态且显示 1 USD = 6.7200 CNY', fx.classList.contains('is-cny') && fx.textContent.indexOf('1 USD = 6.7200 CNY') !== -1, fx.textContent);
+    check('CNY 按钮可用', !cnyBtn.disabled);
+    check('人民币态余额标签标明折合', container.querySelector('#yuyu-bal-label').textContent.indexOf('折合') !== -1, container.querySelector('#yuyu-bal-label').textContent);
+
+    usdBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 350));
+    check('点 USD 后符号切回美元', cur.textContent === '$', cur.textContent);
+    check('点 USD 后金额回到 12.34', /^12\.34$/.test(bal.textContent), bal.textContent);
+    check('点 USD 后滑块标记 USD', switchEl.getAttribute('data-active') === 'USD', switchEl.getAttribute('data-active'));
+    check('点 USD 后汇率行退出人民币态', !fx.classList.contains('is-cny') && fx.textContent.indexOf('钱包以美元记账') !== -1, fx.textContent);
+    check('美元态余额标签不再写折合', container.querySelector('#yuyu-bal-label').textContent === '可用余额', container.querySelector('#yuyu-bal-label').textContent);
+    check('币种偏好已保存为 USD', prefs.displayCurrency === 'USD', prefs.displayCurrency);
+
+    cnyBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 350));
+    check('点 CNY 后符号切回人民币', cur.textContent === '¥', cur.textContent);
+    check('点 CNY 后金额换算回 82.92', /^82\.92$/.test(bal.textContent), bal.textContent);
+    check('币种偏好已保存为 CNY', prefs.displayCurrency === 'CNY', prefs.displayCurrency);
+
+    // 设置页三态：auto / USD / CNY
+    container.querySelector('#yuyu-card-settings-btn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    const autoTab = container.querySelector('.yuyu-currency-tab[data-val="auto"]');
+    const cnyTab = container.querySelector('.yuyu-currency-tab[data-val="CNY"]');
+    check('设置页存在三态币种', Boolean(autoTab && cnyTab));
+    check('设置页 CNY 可选', !cnyTab.disabled);
+    autoTab.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 100));
+    check('点自动后偏好为 auto', prefs.displayCurrency === 'auto', prefs.displayCurrency);
+  }
+}
+
+console.log('[ui-test] 15) 旧站没有汇率时 CNY 禁用并回退 USD');
+{
+  let prefs = { theme: 'light', widgetStyle: 'whale', hideBalance: false, displayCurrency: 'CNY' };
+  const payload = {
+    activeEmail: 'sub:old@example.com',
+    activeSite: 'sub',
+    accounts: [{ email: 'sub:old@example.com', site: 'sub', balance: 3.5, active: true }],
+    preferences: prefs,
+    snapshot: { success: true, email: 'old@example.com', site: 'sub', balance: 3.5, totalRecharged: 10, exchangeRate: null, timestamp: Date.now() }
+  };
+  const fetch = async (url, options = {}) => {
+    if (String(url).includes('/settings')) {
+      if (options.method === 'POST') {
+        const body = JSON.parse(options.body || '{}');
+        if (body.preferences) prefs = body.preferences;
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, preferences: prefs }) };
+    }
+    return { ok: true, status: 200, json: async () => payload };
+  };
+  const { container } = await boot({ fetch });
+  await new Promise((r) => setTimeout(r, 100));
+  if (container) {
+    const win = container.ownerDocument.defaultView;
+    const switchEl = container.querySelector('#yuyu-cur-switch');
+    const cur = container.querySelector('#yuyu-card-cur');
+    const cnyBtn = switchEl.querySelector('[data-cur="CNY"]');
+    const usdBtn = switchEl.querySelector('[data-cur="USD"]');
+    check('旧站即使偏好 CNY 也回退美元', cur.textContent === '$', cur.textContent);
+    check('旧站滑块标记 USD', switchEl.getAttribute('data-active') === 'USD', switchEl.getAttribute('data-active'));
+    check('旧站 CNY 按钮禁用', cnyBtn.disabled);
+    check('旧站 USD 按钮可用', !usdBtn.disabled);
+    check('旧站汇率行说明钱包以美元记账', container.querySelector('#yuyu-card-fx').textContent.indexOf('钱包以美元记账') !== -1, container.querySelector('#yuyu-card-fx').textContent);
+    cnyBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    check('旧站点 CNY 不会切走美元', cur.textContent === '$', cur.textContent);
   }
 }
 
