@@ -495,5 +495,40 @@ console.log('[ui-test] 15) 旧站没有汇率时 CNY 禁用并回退 USD');
   }
 }
 
+console.log('[ui-test] 16) 打开面板静默补扫浏览器，不自动切号');
+{
+  const calls = [];
+  const payload = {
+    activeEmail: 'www:demo@example.com',
+    activeSite: 'www',
+    accounts: [{ email: 'www:demo@example.com', site: 'www', balance: 12.34, active: true }],
+    preferences: { theme: 'light', widgetStyle: 'whale', hideBalance: false, displayCurrency: 'auto' },
+    snapshot: { success: true, email: 'demo@example.com', site: 'www', balance: 12.34, exchangeRate: null, timestamp: Date.now() }
+  };
+  const fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method || 'GET' });
+    if (String(url).includes('/update')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, update: { available: false, currentVersion: '1.4.2', checkedAt: Date.now(), source: 'test' } }) };
+    }
+    if (String(url).includes('/settings')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, preferences: payload.preferences }) };
+    }
+    return { ok: true, status: 200, json: async () => payload };
+  };
+  const { container } = await boot({ fetch });
+  await new Promise((r) => setTimeout(r, 120));
+  if (container) {
+    const win = container.ownerDocument.defaultView;
+    const silentBeforeOpen = calls.filter((c) => c.url.includes('syncBrowser=silent')).length;
+    container.querySelector('#yuyu-whale-menu-btn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 80));
+    const silentCalls = calls.filter((c) => c.url.includes('syncBrowser=silent'));
+    const autoCalls = calls.filter((c) => c.url.includes('syncBrowser=1'));
+    check('首次挂载使用静默补扫', silentBeforeOpen >= 1, `count=${silentBeforeOpen}`);
+    check('打开面板不会自动切号', autoCalls.length === 0, `count=${autoCalls.length}`);
+    check('短时间重复打开不会重复扫描', silentCalls.length === silentBeforeOpen, `before=${silentBeforeOpen} after=${silentCalls.length}`);
+  }
+}
+
 console.log(`\n[ui-test] 结果: ${passed} 通过 / ${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

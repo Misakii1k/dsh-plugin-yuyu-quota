@@ -837,7 +837,8 @@
         body: JSON.stringify({ key: opts.key, email: opts.email })
       });
     } else {
-      var query = opts.syncBrowser ? '?syncBrowser=1' : '?syncBrowser=0';
+      var syncMode = opts.syncBrowser === 'silent' ? 'silent' : (opts.syncBrowser ? '1' : '0');
+      var query = '?syncBrowser=' + syncMode;
       promise = requestBackend('/snapshot' + query, { method: 'GET' });
     }
 
@@ -858,6 +859,22 @@
         updateUI();
         notifyListeners();
         if (callback) callback(tokenStore, new Error('backend unreachable'), null);
+      });
+  }
+
+  // 打开面板/设置时的静默补扫：只把浏览器里新登录的账号补进账号库，
+  // 不替用户切换当前账号；60 秒节流，避免反复开合面板打出一串扫描请求。
+  var lastSilentBrowserSyncAt = 0;
+  function requestSilentBrowserSync() {
+    var now = Date.now();
+    if (now - lastSilentBrowserSyncAt < 60000) return;
+    lastSilentBrowserSyncAt = now;
+    requestBackend('/snapshot?syncBrowser=silent', { method: 'GET' })
+      .then(function(body) {
+        applyBackendPayload(body);
+      })
+      .catch(function() {
+        // 静默补扫失败不影响当前余额展示，也不把界面标记为离线
       });
   }
 
@@ -2225,6 +2242,9 @@
         if (bubblePopup) bubblePopup.classList.remove('is-open');
         card.classList.add('is-open');
         clearTurnBadge();
+        // 打开面板时补扫浏览器：Chrome/Edge 在插件启动后才登录的账号，
+        // 不用用户手动点同步也能进入账号列表；已有激活账号时不会自动切号。
+        requestSilentBrowserSync();
         // 展开卡片时静默拉取更新状态以刷新红点
         requestBackend('/update', { method: 'GET' })
           .then(function(b) {
@@ -3213,6 +3233,8 @@
         if (draggable && typeof draggable.applyPosition === 'function') {
           try { draggable.applyPosition(draggable.getPosition(), false); } catch (e) {}
         }
+        // 设置页也是补扫入口：只新增浏览器账号，不自动切换当前账号
+        requestSilentBrowserSync();
       }
     }
 
@@ -3340,7 +3362,6 @@
         setCardIsOpen(!isOpen);
         if (isOpen) {
           pollTurnReport();
-          fetchRemoteBalance(null, { syncBrowser: true });
         }
       });
     }
@@ -3411,8 +3432,8 @@
       }, { action: 'sync', forceCapture: false });
     });
 
-    // 首次挂载立即检测一次浏览器最新账号，随后按调度器执行
-    fetchRemoteBalance(null, { syncBrowser: true });
+    // 首次挂载只补扫登录态，不自动切号；已有激活账号时保持原账号
+    requestSilentBrowserSync();
     rescheduleTimer(false);
 
     // —— 销毁入口 ——
@@ -3516,7 +3537,8 @@
           setSnap(Object.assign({}, newStore));
         };
         listeners.push(handler);
-        fetchRemoteBalance(null, { syncBrowser: true });
+        // 设置页挂载时静默补扫，不自动切号
+        requestSilentBrowserSync();
         return function() {
           var idx = listeners.indexOf(handler);
           if (idx !== -1) listeners.splice(idx, 1);

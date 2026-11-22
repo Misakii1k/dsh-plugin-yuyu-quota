@@ -103,7 +103,7 @@ export declare function createYuyuService(initialConfig?: Partial<PluginConfig>,
     refreshAccount: (targetEmail?: string, options?: {
         others?: boolean;
     }) => Promise<BalanceSnapshot | null>;
-    syncFromBrowser: (forceCapture?: boolean, manualToken?: string, forceSwitch?: boolean) => Promise<{
+    syncFromBrowser: (forceCapture?: boolean, manualToken?: string, forceSwitch?: boolean, silent?: boolean) => Promise<{
         success: boolean;
         browser: string;
         site: YuyuSiteId;

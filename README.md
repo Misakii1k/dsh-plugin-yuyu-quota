@@ -52,7 +52,7 @@
 ### 方式二：手动加载
 
 ```bash
-dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.4.1.tgz"
+dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.4.2.tgz"
 ```
 
 ### 首次同步凭据
@@ -61,6 +61,8 @@ dsh plugin --profile desktop add "./dsh-plugin-yuyu-quota-1.4.1.tgz"
 
 1. **Windows 双击** `一键配置.bat` —— 自动扫描本机 Chromium / Firefox 系浏览器的登录态，从已登录的鱼鱼页面取出 Token，校验余额后写入配置。Chromium 系覆盖 Chrome、Edge（含 Beta / Dev / Canary / WebView2）、Brave、Vivaldi、Opera、Arc、Yandex、360、QQ、搜狗、Maxthon；Firefox 系覆盖 Firefox、Waterfox、LibreWolf、Zen。
 2. **在 DSH 界面点击**「一键从浏览器同步登录凭据」—— 后台同样完成探测、抓取、保存与刷新。
+
+> 1.4.2 起，打开余额面板或进入设置页时会自动静默补扫本机浏览器的登录态；只把新账号补进账号库，不自动切换当前账号，60 秒内不会重复扫描。
 
 > 两者都不需要你开 F12 手动复制那串 300 多位的 Token。
 
